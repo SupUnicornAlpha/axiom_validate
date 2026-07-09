@@ -2,3 +2,4 @@
 **/target
 /reports/eventlogs
 /reports/latest-report.md
+/reports/generated

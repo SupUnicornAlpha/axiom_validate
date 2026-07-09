@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use axiom_core::{
     AuditShell, CapabilityRegistry, JsonlEventLog, Kernel, LocalTransport, QueueScheduler,
@@ -42,6 +43,12 @@ pub fn all_cases() -> Vec<ValidationCase> {
         ValidationCase {
             run: local_remote_invariance,
         },
+        ValidationCase {
+            run: ts_sdk_conformance_runspec,
+        },
+        ValidationCase {
+            run: research_brief_agent,
+        },
     ]
 }
 
@@ -67,6 +74,19 @@ fn base_registry() -> CapabilityRegistry {
                 summary: "tool_write_patch".to_string(),
                 messages: vec![],
                 outputs: vec![format!("patch:{input}")],
+            })
+        }),
+    );
+    registry.register(
+        "tool/compose_brief",
+        StaticCapability::new(|input, _ctx| {
+            Ok(Effect {
+                summary: "tool_compose_brief".to_string(),
+                messages: vec![Message {
+                    role: "tool".to_string(),
+                    content: format!("brief:market={input};key_points=3;risks=2"),
+                }],
+                outputs: vec![format!("brief:{input}")],
             })
         }),
     );
@@ -409,8 +429,108 @@ fn local_remote_invariance() -> CaseResult {
     }
 }
 
-fn local_kernel()
--> Kernel<QueueScheduler, AuditShell, LocalTransport> {
+fn ts_sdk_conformance_runspec() -> CaseResult {
+    let script = PathBuf::from("../axiom_kernal/sdks/typescript/scripts/build-coding-patch-small.mjs");
+    let compare_script = PathBuf::from("runners/compare-json.mjs");
+    let fixture_path = PathBuf::from("fixtures/runspec/coding_patch_small.json");
+    let generated_path = temp_generated_path("coding_patch_small.generated.json");
+    let output = Command::new("node")
+        .arg(&script)
+        .output()
+        .expect("node should be available for ts conformance");
+    let generated = String::from_utf8(output.stdout).expect("utf8 json output");
+    fs::write(&generated_path, &generated).expect("generated json should be writable");
+
+    let compare = Command::new("node")
+        .arg(&compare_script)
+        .arg(&generated_path)
+        .arg(&fixture_path)
+        .output()
+        .expect("node compare script should run");
+    let compare_stdout = String::from_utf8(compare.stdout).expect("compare result utf8");
+    let equal = compare_stdout.contains("\"equal\":true");
+    let passed = output.status.success() && compare.status.success() && equal;
+
+    CaseResult {
+        case_id: "ts_sdk_conformance_runspec".to_string(),
+        category: "sdk".to_string(),
+        passed,
+        summary: "TypeScript SDK generates the same RunSpec as the golden fixture".to_string(),
+        metrics: vec![
+            Metric {
+                name: "node_exit_success".to_string(),
+                value: output.status.success().to_string(),
+            },
+            Metric {
+                name: "json_match".to_string(),
+                value: equal.to_string(),
+            },
+            Metric {
+                name: "generated_bytes".to_string(),
+                value: generated.len().to_string(),
+            },
+        ],
+        evidence: vec![
+            format!("script={}", script.display()),
+            format!("compare_script={}", compare_script.display()),
+            format!("generated={}", generated_path.display()),
+            format!("fixture={}", fixture_path.display()),
+        ],
+    }
+}
+
+fn research_brief_agent() -> CaseResult {
+    let kernel = local_kernel();
+    let spec = research_brief_spec();
+    let report = kernel.run(&spec).expect("research brief should run");
+
+    let brief_output = report
+        .state
+        .outputs
+        .iter()
+        .any(|output| output == "brief:cloud database market");
+    let publish_output = report
+        .state
+        .outputs
+        .iter()
+        .any(|output| output == "brief ready");
+    let tool_message = report
+        .state
+        .messages
+        .iter()
+        .any(|message| message.content.contains("key_points=3"));
+    let passed = brief_output && publish_output && tool_message;
+
+    CaseResult {
+        case_id: "research_brief_agent".to_string(),
+        category: "agents".to_string(),
+        passed,
+        summary: "Research brief agent can compose and publish a brief with auditable outputs"
+            .to_string(),
+        metrics: vec![
+            Metric {
+                name: "brief_completeness".to_string(),
+                value: passed.to_string(),
+            },
+            Metric {
+                name: "event_count".to_string(),
+                value: report.events.len().to_string(),
+            },
+            Metric {
+                name: "output_count".to_string(),
+                value: report.state.outputs.len().to_string(),
+            },
+        ],
+        evidence: report
+            .state
+            .outputs
+            .into_iter()
+            .chain(report.state.messages.into_iter().map(|message| message.content))
+            .collect(),
+    }
+}
+
+fn local_kernel() -> Kernel<QueueScheduler, AuditShell, LocalTransport> {
     Kernel::new(
         QueueScheduler,
         AuditShell,
@@ -419,8 +539,7 @@ fn local_kernel()
     )
 }
 
-fn remote_kernel()
--> Kernel<QueueScheduler, AuditShell, RemoteTransportMock> {
+fn remote_kernel() -> Kernel<QueueScheduler, AuditShell, RemoteTransportMock> {
     Kernel::new(
         QueueScheduler,
         AuditShell,
@@ -461,10 +580,38 @@ fn coding_patch_small_spec() -> RunSpec {
     spec
 }
 
+fn research_brief_spec() -> RunSpec {
+    let mut spec = RunSpec::new(
+        "research-brief-agent",
+        "research brief agent",
+        vec![
+            msg_step("r1", "collect ask", "user", "summarize cloud database market"),
+            tool_step(
+                "r2",
+                "compose brief",
+                "tool/compose_brief",
+                "cloud database market",
+            ),
+            tool_step("r3", "publish brief", "tool/echo", "brief ready"),
+        ],
+    );
+    spec.capability_leases.push(lease("tool/compose_brief"));
+    spec.capability_leases.push(lease("tool/echo"));
+    spec
+}
+
 fn temp_event_path(case_id: &str) -> PathBuf {
     let root = PathBuf::from("reports/eventlogs");
     let _ = fs::create_dir_all(&root);
     let path = root.join(format!("{case_id}.jsonl"));
+    let _ = fs::remove_file(&path);
+    path
+}
+
+fn temp_generated_path(name: &str) -> PathBuf {
+    let root = PathBuf::from("reports/generated");
+    let _ = fs::create_dir_all(&root);
+    let path = root.join(name);
     let _ = fs::remove_file(&path);
     path
 }

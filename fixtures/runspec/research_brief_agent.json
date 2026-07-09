@@ -1,0 +1,51 @@
+{
+  "run_id": "research-brief-agent",
+  "name": "research brief agent",
+  "namespace": {
+    "workspace_root": ".",
+    "visible_capabilities": []
+  },
+  "budget": {
+    "max_steps": 128
+  },
+  "capability_leases": [
+    {
+      "capability_id": "tool/compose_brief",
+      "permissions": ["invoke"]
+    },
+    {
+      "capability_id": "tool/echo",
+      "permissions": ["invoke"]
+    }
+  ],
+  "steps": [
+    {
+      "id": "r1",
+      "title": "collect ask",
+      "action": {
+        "kind": "message",
+        "role": "user",
+        "content": "summarize cloud database market"
+      }
+    },
+    {
+      "id": "r2",
+      "title": "compose brief",
+      "action": {
+        "kind": "capability_invoke",
+        "capability_id": "tool/compose_brief",
+        "input": "cloud database market"
+      }
+    },
+    {
+      "id": "r3",
+      "title": "publish brief",
+      "action": {
+        "kind": "capability_invoke",
+        "capability_id": "tool/echo",
+        "input": "brief ready"
+      }
+    }
+  ],
+  "metadata": {}
+}
