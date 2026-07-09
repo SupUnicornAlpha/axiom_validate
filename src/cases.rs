@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use axiom_core::{
     AuditShell, CapabilityRegistry, JsonlEventLog, Kernel, LocalTransport, QueueScheduler,
-    StaticCapability,
+    RemoteTransportMock, StaticCapability,
 };
 use axiom_spec::{CapabilityLease, Effect, MergeMode, Message, RunSpec, Step, StepAction};
 
@@ -38,6 +38,9 @@ pub fn all_cases() -> Vec<ValidationCase> {
         },
         ValidationCase {
             run: coding_patch_small,
+        },
+        ValidationCase {
+            run: local_remote_invariance,
         },
     ]
 }
@@ -114,12 +117,7 @@ fn kernel_replay_basic() -> CaseResult {
 }
 
 fn shell_decision_allow_rewrite_deny() -> CaseResult {
-    let kernel = Kernel::new(
-        QueueScheduler,
-        AuditShell,
-        LocalTransport::new(base_registry()),
-        None,
-    );
+    let kernel = local_kernel();
     let mut spec = RunSpec::new(
         "shell-decisions",
         "shell decisions",
@@ -163,12 +161,7 @@ fn shell_decision_allow_rewrite_deny() -> CaseResult {
 }
 
 fn tool_syscall_audit() -> CaseResult {
-    let kernel = Kernel::new(
-        QueueScheduler,
-        AuditShell,
-        LocalTransport::new(base_registry()),
-        None,
-    );
+    let kernel = local_kernel();
     let mut spec = RunSpec::new(
         "tool-syscall-audit",
         "tool syscall audit",
@@ -212,12 +205,7 @@ fn tool_syscall_audit() -> CaseResult {
 }
 
 fn childrun_capability_lease_denied() -> CaseResult {
-    let kernel = Kernel::new(
-        QueueScheduler,
-        AuditShell,
-        LocalTransport::new(base_registry()),
-        None,
-    );
+    let kernel = local_kernel();
 
     let child = RunSpec::new(
         "child-denied",
@@ -255,12 +243,7 @@ fn childrun_capability_lease_denied() -> CaseResult {
 }
 
 fn childrun_merge_gate() -> CaseResult {
-    let kernel = Kernel::new(
-        QueueScheduler,
-        AuditShell,
-        LocalTransport::new(base_registry()),
-        None,
-    );
+    let kernel = local_kernel();
 
     let mut child = RunSpec::new(
         "child-merge",
@@ -319,41 +302,8 @@ fn childrun_merge_gate() -> CaseResult {
 }
 
 fn coding_patch_small() -> CaseResult {
-    let kernel = Kernel::new(
-        QueueScheduler,
-        AuditShell,
-        LocalTransport::new(base_registry()),
-        None,
-    );
-
-    let reviewer = RunSpec::new(
-        "reviewer-child",
-        "reviewer child",
-        vec![
-            msg_step("review-1", "review findings", "assistant", "patch looks safe"),
-            msg_step("review-2", "review verdict", "assistant", "approved"),
-        ],
-    );
-
-    let mut spec = RunSpec::new(
-        "coding-patch-small",
-        "coding patch small",
-        vec![
-            msg_step("s1", "understand task", "user", "fix greeting output"),
-            tool_step("s2", "draft patch", "tool/write_patch", "replace hi with hello"),
-            Step {
-                id: "s3".to_string(),
-                title: "delegate reviewer".to_string(),
-                action: StepAction::Delegate {
-                    child: Box::new(reviewer),
-                    merge_mode: MergeMode::AppendMessages,
-                },
-            },
-            tool_step("s4", "echo final result", "tool/echo", "hello"),
-        ],
-    );
-    spec.capability_leases.push(lease("tool/write_patch"));
-    spec.capability_leases.push(lease("tool/echo"));
+    let kernel = local_kernel();
+    let spec = coding_patch_small_spec();
 
     let report = kernel.run(&spec).expect("coding_patch_small should run");
     let task_success = report.state.outputs.iter().any(|output| output == "hello")
@@ -396,6 +346,119 @@ fn coding_patch_small() -> CaseResult {
             .chain(report.state.messages.into_iter().map(|message| message.content))
             .collect(),
     }
+}
+
+fn local_remote_invariance() -> CaseResult {
+    let spec = coding_patch_small_spec();
+    let local = local_kernel()
+        .run(&spec)
+        .expect("local invariance run should succeed");
+    let remote = remote_kernel()
+        .run(&spec)
+        .expect("remote invariance run should succeed");
+
+    let same_outputs = local.state.outputs == remote.state.outputs;
+    let same_messages = local.state.messages == remote.state.messages;
+    let same_denials = local.state.denied_actions == remote.state.denied_actions;
+    let same_event_details = local
+        .events
+        .iter()
+        .map(|event| format!("{:?}:{}", event.kind, event.detail))
+        .collect::<Vec<_>>()
+        == remote
+            .events
+            .iter()
+            .map(|event| format!("{:?}:{}", event.kind, event.detail))
+            .collect::<Vec<_>>();
+    let passed = same_outputs && same_messages && same_denials && same_event_details;
+
+    CaseResult {
+        case_id: "local_remote_invariance".to_string(),
+        category: "transport".to_string(),
+        passed,
+        summary: "LocalTransport and RemoteTransportMock preserve the same observable semantics"
+            .to_string(),
+        metrics: vec![
+            Metric {
+                name: "same_outputs".to_string(),
+                value: same_outputs.to_string(),
+            },
+            Metric {
+                name: "same_messages".to_string(),
+                value: same_messages.to_string(),
+            },
+            Metric {
+                name: "same_event_details".to_string(),
+                value: same_event_details.to_string(),
+            },
+            Metric {
+                name: "local_event_count".to_string(),
+                value: local.events.len().to_string(),
+            },
+            Metric {
+                name: "remote_event_count".to_string(),
+                value: remote.events.len().to_string(),
+            },
+        ],
+        evidence: vec![
+            format!("local_outputs={:?}", local.state.outputs),
+            format!("remote_outputs={:?}", remote.state.outputs),
+            format!("local_events={}", local.events.len()),
+            format!("remote_events={}", remote.events.len()),
+        ],
+    }
+}
+
+fn local_kernel()
+-> Kernel<QueueScheduler, AuditShell, LocalTransport> {
+    Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        None,
+    )
+}
+
+fn remote_kernel()
+-> Kernel<QueueScheduler, AuditShell, RemoteTransportMock> {
+    Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        RemoteTransportMock::new(base_registry()),
+        None,
+    )
+}
+
+fn coding_patch_small_spec() -> RunSpec {
+    let reviewer = RunSpec::new(
+        "reviewer-child",
+        "reviewer child",
+        vec![
+            msg_step("review-1", "review findings", "assistant", "patch looks safe"),
+            msg_step("review-2", "review verdict", "assistant", "approved"),
+        ],
+    );
+
+    let mut spec = RunSpec::new(
+        "coding-patch-small",
+        "coding patch small",
+        vec![
+            msg_step("s1", "understand task", "user", "fix greeting output"),
+            tool_step("s2", "draft patch", "tool/write_patch", "replace hi with hello"),
+            Step {
+                id: "s3".to_string(),
+                title: "delegate reviewer".to_string(),
+                action: StepAction::Delegate {
+                    child: Box::new(reviewer),
+                    merge_mode: MergeMode::AppendMessages,
+                },
+            },
+            tool_step("s4", "echo final result", "tool/echo", "hello"),
+        ],
+    );
+    spec.capability_leases.push(lease("tool/write_patch"));
+    spec.capability_leases.push(lease("tool/echo"));
+    spec
 }
 
 fn temp_event_path(case_id: &str) -> PathBuf {
