@@ -1,0 +1,4 @@
+/target
+**/target
+/reports/eventlogs
+/reports/latest-report.md

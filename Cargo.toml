@@ -1,0 +1,12 @@
+[package]
+name = "axiom-validate"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axiom-core = { path = "../axiom_kernal/crates/axiom-core" }
+axiom-spec = { path = "../axiom_kernal/crates/axiom-spec" }
+
+[[bin]]
+name = "axiom-validate"
+path = "src/main.rs"

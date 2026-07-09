@@ -1,0 +1,61 @@
+#[derive(Clone, Debug)]
+pub struct Metric {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct CaseResult {
+    pub case_id: String,
+    pub category: String,
+    pub passed: bool,
+    pub summary: String,
+    pub metrics: Vec<Metric>,
+    pub evidence: Vec<String>,
+}
+
+pub fn render_markdown_report(results: &[CaseResult]) -> String {
+    let mut out = String::new();
+    out.push_str("# Axiom Validate Report\n\n");
+    out.push_str("| Case | Category | Status | Summary |\n");
+    out.push_str("|------|----------|--------|---------|\n");
+    for result in results {
+        out.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            result.case_id,
+            result.category,
+            if result.passed { "PASS" } else { "FAIL" },
+            result.summary.replace('|', "/"),
+        ));
+    }
+    out.push_str("\n## Details\n\n");
+    for result in results {
+        out.push_str(&format!("### {}\n\n", result.case_id));
+        out.push_str(&format!("- Category: `{}`\n", result.category));
+        out.push_str(&format!(
+            "- Status: `{}`\n",
+            if result.passed { "PASS" } else { "FAIL" }
+        ));
+        out.push_str(&format!("- Summary: {}\n", result.summary));
+        if !result.metrics.is_empty() {
+            out.push_str("- Metrics:\n");
+            for metric in &result.metrics {
+                out.push_str(&format!("  - `{}` = `{}`\n", metric.name, metric.value));
+            }
+        }
+        if !result.evidence.is_empty() {
+            out.push_str("- Evidence:\n");
+            for evidence in &result.evidence {
+                out.push_str(&format!("  - {}\n", evidence));
+            }
+        }
+        out.push('\n');
+    }
+    out.push_str("## Evaluation Methods\n\n");
+    out.push_str("- `replay_determinism`: 对齐开源 trace replay / event sourcing 验证思路。\n");
+    out.push_str("- `audit_coverage`: 对齐工具调用审计覆盖率与治理可见性验证。\n");
+    out.push_str("- `permission_denial_rate`: 对齐 sandbox / lease 越权拦截验证。\n");
+    out.push_str("- `merge_semantics`: 对齐 multi-agent / subagent 合并语义验证。\n");
+    out.push_str("- `task_success`: 作为后续接入开源基准（如 SWE-bench 风格、GAIA 风格）的占位接口。\n");
+    out
+}
