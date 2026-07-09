@@ -1,0 +1,92 @@
+{
+  "run_id": "coding-patch-small",
+  "name": "coding patch small",
+  "namespace": {
+    "workspace_root": ".",
+    "visible_capabilities": []
+  },
+  "budget": {
+    "max_steps": 128
+  },
+  "capability_leases": [
+    {
+      "capability_id": "tool/write_patch",
+      "permissions": ["invoke"]
+    },
+    {
+      "capability_id": "tool/echo",
+      "permissions": ["invoke"]
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "title": "understand task",
+      "action": {
+        "kind": "message",
+        "role": "user",
+        "content": "fix greeting output"
+      }
+    },
+    {
+      "id": "s2",
+      "title": "draft patch",
+      "action": {
+        "kind": "capability_invoke",
+        "capability_id": "tool/write_patch",
+        "input": "replace hi with hello"
+      }
+    },
+    {
+      "id": "s3",
+      "title": "delegate reviewer",
+      "action": {
+        "kind": "delegate",
+        "merge_mode": "append_messages",
+        "child": {
+          "run_id": "reviewer-child",
+          "name": "reviewer child",
+          "namespace": {
+            "workspace_root": ".",
+            "visible_capabilities": []
+          },
+          "budget": {
+            "max_steps": 128
+          },
+          "capability_leases": [],
+          "steps": [
+            {
+              "id": "review-1",
+              "title": "review findings",
+              "action": {
+                "kind": "message",
+                "role": "assistant",
+                "content": "patch looks safe"
+              }
+            },
+            {
+              "id": "review-2",
+              "title": "review verdict",
+              "action": {
+                "kind": "message",
+                "role": "assistant",
+                "content": "approved"
+              }
+            }
+          ],
+          "metadata": {}
+        }
+      }
+    },
+    {
+      "id": "s4",
+      "title": "echo final result",
+      "action": {
+        "kind": "capability_invoke",
+        "capability_id": "tool/echo",
+        "input": "hello"
+      }
+    }
+  ],
+  "metadata": {}
+}

@@ -16,6 +16,7 @@
 - 增加 wrap vs native 对照 runner
 - 增加 local vs remote invariance runner
 - 增加 SDK conformance runner
+- 补充 golden RunSpec fixtures（已增加 `coding_patch_small`）
 - 对接开源评测形式：
   - SWE-bench 风格 coding tasks
   - GAIA 风格 general agent tasks

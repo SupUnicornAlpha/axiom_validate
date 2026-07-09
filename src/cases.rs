@@ -2,7 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use axiom_core::{
-    AuditShell, CapabilityRegistry, JsonlEventLog, Kernel, QueueScheduler, StaticCapability,
+    AuditShell, CapabilityRegistry, JsonlEventLog, Kernel, LocalTransport, QueueScheduler,
+    StaticCapability,
 };
 use axiom_spec::{CapabilityLease, Effect, MergeMode, Message, RunSpec, Step, StepAction};
 
@@ -34,6 +35,9 @@ pub fn all_cases() -> Vec<ValidationCase> {
         },
         ValidationCase {
             run: childrun_merge_gate,
+        },
+        ValidationCase {
+            run: coding_patch_small,
         },
     ]
 }
@@ -71,7 +75,7 @@ fn kernel_replay_basic() -> CaseResult {
     let kernel = Kernel::new(
         QueueScheduler,
         AuditShell,
-        base_registry(),
+        LocalTransport::new(base_registry()),
         Some(JsonlEventLog::new(&event_path)),
     );
     let mut spec = RunSpec::new(
@@ -110,8 +114,13 @@ fn kernel_replay_basic() -> CaseResult {
 }
 
 fn shell_decision_allow_rewrite_deny() -> CaseResult {
-    let kernel = Kernel::new(QueueScheduler, AuditShell, base_registry(), None);
-    let spec = RunSpec::new(
+    let kernel = Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        None,
+    );
+    let mut spec = RunSpec::new(
         "shell-decisions",
         "shell decisions",
         vec![
@@ -120,7 +129,6 @@ fn shell_decision_allow_rewrite_deny() -> CaseResult {
             tool_step("s3", "echo third", "tool/echo", "third"),
         ],
     );
-    let mut spec = spec;
     spec.capability_leases.push(lease("tool/echo"));
 
     let report = kernel.run(&spec).expect("shell decisions should run");
@@ -146,12 +154,21 @@ fn shell_decision_allow_rewrite_deny() -> CaseResult {
                 value: report.state.outputs.len().to_string(),
             },
         ],
-        evidence: report.events.iter().map(|event| format!("{:?}:{}", event.kind, event.detail)).collect(),
+        evidence: report
+            .events
+            .iter()
+            .map(|event| format!("{:?}:{}", event.kind, event.detail))
+            .collect(),
     }
 }
 
 fn tool_syscall_audit() -> CaseResult {
-    let kernel = Kernel::new(QueueScheduler, AuditShell, base_registry(), None);
+    let kernel = Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        None,
+    );
     let mut spec = RunSpec::new(
         "tool-syscall-audit",
         "tool syscall audit",
@@ -195,7 +212,12 @@ fn tool_syscall_audit() -> CaseResult {
 }
 
 fn childrun_capability_lease_denied() -> CaseResult {
-    let kernel = Kernel::new(QueueScheduler, AuditShell, base_registry(), None);
+    let kernel = Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        None,
+    );
 
     let child = RunSpec::new(
         "child-denied",
@@ -233,7 +255,12 @@ fn childrun_capability_lease_denied() -> CaseResult {
 }
 
 fn childrun_merge_gate() -> CaseResult {
-    let kernel = Kernel::new(QueueScheduler, AuditShell, base_registry(), None);
+    let kernel = Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        None,
+    );
 
     let mut child = RunSpec::new(
         "child-merge",
@@ -288,6 +315,86 @@ fn childrun_merge_gate() -> CaseResult {
             },
         ],
         evidence: report.state.outputs,
+    }
+}
+
+fn coding_patch_small() -> CaseResult {
+    let kernel = Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        None,
+    );
+
+    let reviewer = RunSpec::new(
+        "reviewer-child",
+        "reviewer child",
+        vec![
+            msg_step("review-1", "review findings", "assistant", "patch looks safe"),
+            msg_step("review-2", "review verdict", "assistant", "approved"),
+        ],
+    );
+
+    let mut spec = RunSpec::new(
+        "coding-patch-small",
+        "coding patch small",
+        vec![
+            msg_step("s1", "understand task", "user", "fix greeting output"),
+            tool_step("s2", "draft patch", "tool/write_patch", "replace hi with hello"),
+            Step {
+                id: "s3".to_string(),
+                title: "delegate reviewer".to_string(),
+                action: StepAction::Delegate {
+                    child: Box::new(reviewer),
+                    merge_mode: MergeMode::AppendMessages,
+                },
+            },
+            tool_step("s4", "echo final result", "tool/echo", "hello"),
+        ],
+    );
+    spec.capability_leases.push(lease("tool/write_patch"));
+    spec.capability_leases.push(lease("tool/echo"));
+
+    let report = kernel.run(&spec).expect("coding_patch_small should run");
+    let task_success = report.state.outputs.iter().any(|output| output == "hello")
+        && report
+            .state
+            .outputs
+            .iter()
+            .any(|output| output == "patch:replace hi with hello");
+    let review_merged = report
+        .state
+        .messages
+        .iter()
+        .any(|message| message.content == "approved");
+    let passed = task_success && review_merged;
+
+    CaseResult {
+        case_id: "coding_patch_small".to_string(),
+        category: "agents".to_string(),
+        passed,
+        summary: "Minimal coding agent can patch, delegate review, and produce audited output"
+            .to_string(),
+        metrics: vec![
+            Metric {
+                name: "task_success".to_string(),
+                value: if task_success { "1.0" } else { "0.0" }.to_string(),
+            },
+            Metric {
+                name: "review_merged".to_string(),
+                value: if review_merged { "1.0" } else { "0.0" }.to_string(),
+            },
+            Metric {
+                name: "event_count".to_string(),
+                value: report.events.len().to_string(),
+            },
+        ],
+        evidence: report
+            .state
+            .outputs
+            .into_iter()
+            .chain(report.state.messages.into_iter().map(|message| message.content))
+            .collect(),
     }
 }
 
