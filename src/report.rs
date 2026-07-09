@@ -59,6 +59,7 @@ pub fn render_markdown_report(results: &[CaseResult]) -> String {
     out.push_str("- `local_remote_invariance`: 对齐本地/远程执行语义一致性验证。\n");
     out.push_str("- `sdk_conformance_runspec`: 对齐多语言 SDK 生成同一 RunSpec 的一致性验证。\n");
     out.push_str("- `brief_completeness`: 对齐 research agent 输出完整性验证。\n");
+    out.push_str("- `wrap_audit_gain`: 对齐 wrap 模式相对 native 执行的审计覆盖收益验证。\n");
     out.push_str("- `task_success`: 作为后续接入开源基准（如 SWE-bench 风格、GAIA 风格）的占位接口。\n");
     out
 }
