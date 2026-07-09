@@ -1,0 +1,13 @@
+{"run_id":"kernel-replay-basic","step_id":null,"kind":"RunCreated","detail":"kernel replay basic"}
+{"run_id":"kernel-replay-basic","step_id":null,"kind":"RunStarted","detail":"kernel_started"}
+{"run_id":"kernel-replay-basic","step_id":"s1","kind":"StepProposed","detail":"user says hi"}
+{"run_id":"kernel-replay-basic","step_id":"s1","kind":"ShellDecision","detail":"allow"}
+{"run_id":"kernel-replay-basic","step_id":"s1","kind":"StepStarted","detail":"user says hi"}
+{"run_id":"kernel-replay-basic","step_id":"s1","kind":"StepCompleted","detail":"message:user"}
+{"run_id":"kernel-replay-basic","step_id":"s1","kind":"EffectApplied","detail":"message:user"}
+{"run_id":"kernel-replay-basic","step_id":"s2","kind":"StepProposed","detail":"echo hi"}
+{"run_id":"kernel-replay-basic","step_id":"s2","kind":"ShellDecision","detail":"allow"}
+{"run_id":"kernel-replay-basic","step_id":"s2","kind":"StepStarted","detail":"echo hi"}
+{"run_id":"kernel-replay-basic","step_id":"s2","kind":"StepCompleted","detail":"tool_echo"}
+{"run_id":"kernel-replay-basic","step_id":"s2","kind":"EffectApplied","detail":"tool_echo"}
+{"run_id":"kernel-replay-basic","step_id":null,"kind":"RunCompleted","detail":"ok"}

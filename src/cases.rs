@@ -22,6 +22,7 @@ impl ValidationCase {
 
 pub fn all_cases() -> Vec<ValidationCase> {
     vec![
+        ValidationCase { run: golden_eventlog_match },
         ValidationCase { run: kernel_replay_basic },
         ValidationCase { run: shell_decision_allow_rewrite_deny },
         ValidationCase { run: tool_syscall_audit },
@@ -34,6 +35,68 @@ pub fn all_cases() -> Vec<ValidationCase> {
         ValidationCase { run: research_brief_agent },
         ValidationCase { run: wrap_vs_native_audit },
     ]
+}
+
+fn golden_eventlog_match() -> CaseResult {
+    let event_path = temp_event_path("kernel_replay_basic.validator");
+    let kernel = Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        Some(JsonlEventLog::new(&event_path)),
+    );
+    let mut spec = RunSpec::new(
+        "kernel-replay-basic",
+        "kernel replay basic",
+        vec![
+            msg_step("s1", "user says hi", "user", "hi"),
+            tool_step("s2", "echo hi", "tool/echo", "hi"),
+        ],
+    );
+    spec.capability_leases.push(lease("tool/echo"));
+
+    let _ = kernel.run(&spec).expect("golden eventlog run should succeed");
+
+    let golden_path = PathBuf::from("fixtures/eventlog/kernel_replay_basic.golden.jsonl");
+    let actual = fs::read_to_string(&event_path).expect("actual eventlog readable");
+    let golden = fs::read_to_string(&golden_path).expect("golden eventlog readable");
+
+    let validator_script = PathBuf::from("runners/validate-eventlog.mjs");
+    let validator = Command::new("node")
+        .arg(&validator_script)
+        .arg(&event_path)
+        .output()
+        .expect("eventlog validator should run");
+    let validator_stdout = String::from_utf8(validator.stdout).expect("validator output utf8");
+    let valid_lines = validator_stdout.contains("\"invalidLines\":0");
+    let content_match = actual == golden;
+    let passed = validator.status.success() && valid_lines && content_match;
+
+    CaseResult {
+        case_id: "golden_eventlog_match".to_string(),
+        category: "eventlog".to_string(),
+        passed,
+        summary: "Generated EventLog matches golden fixture and passes validator".to_string(),
+        metrics: vec![
+            Metric {
+                name: "content_match".to_string(),
+                value: content_match.to_string(),
+            },
+            Metric {
+                name: "validator_clean".to_string(),
+                value: valid_lines.to_string(),
+            },
+            Metric {
+                name: "actual_lines".to_string(),
+                value: actual.lines().count().to_string(),
+            },
+        ],
+        evidence: vec![
+            format!("actual={}", event_path.display()),
+            format!("golden={}", golden_path.display()),
+            format!("validator={}", validator_script.display()),
+        ],
+    }
 }
 
 fn base_registry() -> CapabilityRegistry {
