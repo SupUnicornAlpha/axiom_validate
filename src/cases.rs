@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use axiom_core::{
-    AuditShell, CapabilityRegistry, JsonlEventLog, Kernel, LocalTransport, QueueScheduler,
-    RemoteTransportMock, StaticCapability,
+    AuditShell, CapabilityRegistry, CompositeShell, JsonlEventLog, Kernel, LocalTransport,
+    MinimalPolicyEngine, PolicyMiddleware, QueueScheduler, RemoteTransportMock, StaticCapability,
+    TitlePolicyMiddleware,
 };
 use axiom_spec::{CapabilityLease, Effect, MergeMode, Message, RunSpec, Step, StepAction};
 
@@ -25,6 +26,7 @@ pub fn all_cases() -> Vec<ValidationCase> {
         ValidationCase { run: golden_eventlog_match },
         ValidationCase { run: kernel_replay_basic },
         ValidationCase { run: shell_decision_allow_rewrite_deny },
+        ValidationCase { run: shell_policy_engine_capability_deny },
         ValidationCase { run: tool_syscall_audit },
         ValidationCase { run: childrun_capability_lease_denied },
         ValidationCase { run: childrun_merge_gate },
@@ -181,7 +183,14 @@ fn kernel_replay_basic() -> CaseResult {
 }
 
 fn shell_decision_allow_rewrite_deny() -> CaseResult {
-    let kernel = local_kernel();
+    let mut shell = CompositeShell::new();
+    shell.push(TitlePolicyMiddleware);
+    let kernel = Kernel::new(
+        QueueScheduler,
+        shell,
+        LocalTransport::new(base_registry()),
+        None,
+    );
     let mut spec = RunSpec::new(
         "shell-decisions",
         "shell decisions",
@@ -206,6 +215,67 @@ fn shell_decision_allow_rewrite_deny() -> CaseResult {
         metrics: vec![
             Metric { name: "denied_actions".to_string(), value: denied.to_string() },
             Metric { name: "output_count".to_string(), value: report.state.outputs.len().to_string() },
+        ],
+        evidence: report
+            .events
+            .iter()
+            .map(|event| format!("{:?}:{}", event.kind, event.detail))
+            .collect(),
+    }
+}
+
+fn shell_policy_engine_capability_deny() -> CaseResult {
+    let mut shell = CompositeShell::new();
+    shell.push(TitlePolicyMiddleware);
+    shell.push(PolicyMiddleware::new(
+        MinimalPolicyEngine::new().deny_capability("tool/write_patch"),
+    ));
+    let kernel = Kernel::new(
+        QueueScheduler,
+        shell,
+        LocalTransport::new(base_registry()),
+        None,
+    );
+
+    let mut spec = RunSpec::new(
+        "shell-policy-capability-deny",
+        "shell policy capability deny",
+        vec![
+            tool_step("s1", "safe echo", "tool/echo", "ok"),
+            tool_step("s2", "blocked patch", "tool/write_patch", "forbidden"),
+        ],
+    );
+    spec.capability_leases.push(lease("tool/echo"));
+    spec.capability_leases.push(lease("tool/write_patch"));
+
+    let report = kernel.run(&spec).expect("policy deny should not fail run");
+    let denied = report.state.denied_actions.contains(&"s2".to_string());
+    let allowed_output = report.state.outputs == vec!["ok"];
+    let denial_event = report
+        .events
+        .iter()
+        .any(|event| event.detail.contains("policy_denied_capability:tool/write_patch"));
+    let passed = denied && allowed_output && denial_event;
+
+    CaseResult {
+        case_id: "shell_policy_engine_capability_deny".to_string(),
+        category: "shell".to_string(),
+        passed,
+        summary: "Minimal PolicyEngine can deny capability invocation through the shell chain"
+            .to_string(),
+        metrics: vec![
+            Metric {
+                name: "denied".to_string(),
+                value: denied.to_string(),
+            },
+            Metric {
+                name: "allowed_output_only".to_string(),
+                value: allowed_output.to_string(),
+            },
+            Metric {
+                name: "denial_event".to_string(),
+                value: denial_event.to_string(),
+            },
         ],
         evidence: report
             .events
