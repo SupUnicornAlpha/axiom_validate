@@ -3,12 +3,13 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axiom_core::{
-    AuditShell, CapabilityRegistry, CompositeShell, FileRunStore, JsonlEventLog, Kernel,
-    LocalSubRunTransport, LocalTransport, MemoryRunStore, MinimalPolicyEngine, PolicyMiddleware,
-    QueueScheduler, RemoteSubRunTransportMock, RemoteTransportMock, RunStore, RunStoreRecord,
-    StaticCapability, TitlePolicyMiddleware,
+    AuditShell, CapabilityRegistry, CompositeShell, FileRunLeaseStore, FileRunStore, JsonlEventLog,
+    Kernel, LocalSubRunTransport, LocalTransport, MemoryRunStore, MinimalPolicyEngine,
+    PolicyMiddleware, QueueScheduler, RemoteSubRunTransportMock, RemoteTransportMock,
+    RunLeaseStore, RunStore, RunStoreRecord, StaticCapability, TitlePolicyMiddleware,
 };
 use axiom_spec::{
     CapabilityLease, ChildRunSpec, EffectProposal, MergeMode, Message, RunSpec, Step, StepAction,
@@ -45,6 +46,9 @@ pub fn all_cases() -> Vec<ValidationCase> {
         },
         ValidationCase {
             run: journal_checkpoint_crash_recovery,
+        },
+        ValidationCase {
+            run: writer_lease_epoch_fencing,
         },
         ValidationCase {
             run: shell_decision_allow_rewrite_deny,
@@ -512,6 +516,111 @@ fn journal_checkpoint_crash_recovery() -> CaseResult {
             format!("crash_result={crash_result:?}"),
             format!("checkpoint_root={}", checkpoint_root.display()),
             format!("commit_ids={:?}", durable_checkpoint.applied_commit_ids),
+        ],
+    }
+}
+
+fn writer_lease_epoch_fencing() -> CaseResult {
+    let lease_root = PathBuf::from("reports/checkpoints/writer-lease-fencing");
+    let _ = fs::remove_dir_all(&lease_root);
+    let lease_store = FileRunLeaseStore::new(&lease_root);
+    let writer_a = lease_store
+        .acquire("fenced-run", "writer-a", 100, 10)
+        .expect("writer A acquires epoch 1");
+    let contention = lease_store.acquire("fenced-run", "writer-b", 105, 10);
+    let writer_b = lease_store
+        .acquire("fenced-run", "writer-b", 111, 10)
+        .expect("writer B takes over expired lease");
+    let stale_writer = lease_store.validate(&writer_a, 111);
+    let current_writer = lease_store.validate(&writer_b, 111);
+    let renewed = lease_store
+        .renew(&writer_b, 112, 10)
+        .expect("current writer renews same epoch");
+    let blocked_while_active = contention.is_err();
+    let epoch_advanced = writer_a.epoch == 1 && writer_b.epoch == 2 && renewed.epoch == 2;
+    let stale_fenced = format!("{stale_writer:?}").contains("writer_fenced");
+    let current_valid = current_writer.is_ok() && renewed.expires_at_ms == 122;
+    lease_store
+        .release(&renewed)
+        .expect("synthetic lease releases");
+    let writer_c = lease_store
+        .acquire("fenced-run", "writer-c", 113, 10)
+        .expect("released lease retains epoch tombstone");
+    let release_preserved_epoch = writer_c.epoch == 3;
+    lease_store
+        .release(&writer_c)
+        .expect("writer C releases tombstone lease");
+
+    let live_now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time after epoch")
+        .as_millis() as u64;
+    let blocker = lease_store
+        .acquire("kernel-fenced-run", "external-writer", live_now, 60_000)
+        .expect("external writer acquires live lease");
+    let coordinated_kernel = Kernel::with_coordination(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        LocalSubRunTransport,
+        None,
+        Arc::new(MemoryRunStore::new()),
+        Arc::new(lease_store.clone()),
+        "kernel-writer",
+        30_000,
+    );
+    let blocked_kernel = coordinated_kernel.run(&RunSpec::new(
+        "kernel-fenced-run",
+        "kernel fenced run",
+        Vec::new(),
+    ));
+    lease_store
+        .release(&blocker)
+        .expect("external writer releases live lease");
+    let admitted_kernel = coordinated_kernel.run(&RunSpec::new(
+        "kernel-fenced-run",
+        "kernel fenced run",
+        Vec::new(),
+    ));
+    let kernel_fenced =
+        matches!(blocked_kernel, Err(axiom_core::KernelError::Lease(_))) && admitted_kernel.is_ok();
+
+    CaseResult {
+        case_id: "writer_lease_epoch_fencing".to_string(),
+        category: "coordination".to_string(),
+        passed: blocked_while_active
+            && epoch_advanced
+            && stale_fenced
+            && current_valid
+            && release_preserved_epoch
+            && kernel_fenced,
+        summary: "Expired writer leases advance epoch and fence every stale writer".to_string(),
+        metrics: vec![
+            Metric {
+                name: "active_contention_blocked".to_string(),
+                value: blocked_while_active.to_string(),
+            },
+            Metric {
+                name: "epoch_advanced".to_string(),
+                value: epoch_advanced.to_string(),
+            },
+            Metric {
+                name: "stale_writer_fenced".to_string(),
+                value: stale_fenced.to_string(),
+            },
+            Metric {
+                name: "kernel_fenced_until_release".to_string(),
+                value: kernel_fenced.to_string(),
+            },
+            Metric {
+                name: "release_preserved_epoch".to_string(),
+                value: release_preserved_epoch.to_string(),
+            },
+        ],
+        evidence: vec![
+            format!("writer_a={writer_a:?}"),
+            format!("writer_b={writer_b:?}"),
+            format!("stale_validation={stale_writer:?}"),
         ],
     }
 }

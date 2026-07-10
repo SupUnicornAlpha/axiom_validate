@@ -23,6 +23,8 @@ for (const line of lines) {
       parsed.sequence === previousSequence + 1 &&
       Number.isInteger(parsed.timestamp_ms) &&
       parsed.timestamp_ms >= 0 &&
+      Number.isInteger(parsed.writer_epoch) &&
+      parsed.writer_epoch > 0 &&
       "kind" in parsed &&
       "detail" in parsed
 

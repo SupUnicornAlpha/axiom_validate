@@ -10,6 +10,7 @@ function normalized(path) {
     .map((line) => {
       const event = JSON.parse(line)
       event.timestamp_ms = 0
+      event.writer_epoch = 1
       const digest = event.spec_digest
       event.spec_digest = "<spec-digest>"
       if (event.commit_id) {
