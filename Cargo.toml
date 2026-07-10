@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 axiom-core = { path = "../axiom_kernal/crates/axiom-core" }
 axiom-spec = { path = "../axiom_kernal/crates/axiom-spec" }
+serde_json = "1"
 
 [[bin]]
 name = "axiom-validate"

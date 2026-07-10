@@ -27,6 +27,7 @@ version = "0.1.0"
 dependencies = [
  "axiom-core",
  "axiom-spec",
+ "serde_json",
 ]
 
 [[package]]

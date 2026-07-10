@@ -59,6 +59,7 @@ pub fn render_markdown_report(results: &[CaseResult]) -> String {
     out.push_str("- `checkpoint_resume`: 验证失败后从最后成功 step 恢复且不重复已提交 effect。\n");
     out.push_str("- `journal_checkpoint_crash_recovery`: 验证 committed event 已落盘但 checkpoint 未落盘时，重启后幂等恢复。\n");
     out.push_str("- `writer_lease_epoch_fencing`: 验证活跃 writer 排他、过期接管递增 epoch、旧 writer 永久失效。\n");
+    out.push_str("- `schema_migration_compatibility_matrix`: 验证 v0 迁移、v1 保持、未来版本与未知类型拒绝策略。\n");
     out.push_str("- `audit_coverage`: 对齐工具调用审计覆盖率与治理可见性验证。\n");
     out.push_str("- `permission_denial_rate`: 对齐 sandbox / lease 越权拦截验证。\n");
     out.push_str("- `merge_semantics`: 对齐 multi-agent / subagent 合并语义验证。\n");

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -6,13 +7,16 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axiom_core::{
-    AuditShell, CapabilityRegistry, CompositeShell, FileRunLeaseStore, FileRunStore, JsonlEventLog,
-    Kernel, LocalSubRunTransport, LocalTransport, MemoryRunStore, MinimalPolicyEngine,
+    migrate_checkpoint_file, migrate_checkpoint_json, migrate_event_json, migrate_event_log,
+    validate_run_spec_version, AuditShell, CapabilityRegistry, CheckpointMigrationContext,
+    CompositeShell, EventMigrationContext, FileRunLeaseStore, FileRunStore, JsonlEventLog, Kernel,
+    LocalSubRunTransport, LocalTransport, MemoryRunStore, MigrationStatus, MinimalPolicyEngine,
     PolicyMiddleware, QueueScheduler, RemoteSubRunTransportMock, RemoteTransportMock,
     RunLeaseStore, RunStore, RunStoreRecord, StaticCapability, TitlePolicyMiddleware,
 };
 use axiom_spec::{
-    CapabilityLease, ChildRunSpec, EffectProposal, MergeMode, Message, RunSpec, Step, StepAction,
+    CapabilityLease, ChildRunSpec, EffectProposal, Event, EventKind, MergeMode, Message, RunSpec,
+    RunState, Step, StepAction,
 };
 
 use crate::report::{CaseResult, Metric};
@@ -49,6 +53,9 @@ pub fn all_cases() -> Vec<ValidationCase> {
         },
         ValidationCase {
             run: writer_lease_epoch_fencing,
+        },
+        ValidationCase {
+            run: schema_migration_compatibility_matrix,
         },
         ValidationCase {
             run: shell_decision_allow_rewrite_deny,
@@ -622,6 +629,154 @@ fn writer_lease_epoch_fencing() -> CaseResult {
             format!("writer_b={writer_b:?}"),
             format!("stale_validation={stale_writer:?}"),
         ],
+    }
+}
+
+fn schema_migration_compatibility_matrix() -> CaseResult {
+    let event_context = EventMigrationContext {
+        spec_digest: "a".repeat(64),
+        writer_epoch: 7,
+    };
+    let legacy_event_json =
+        fs::read_to_string("fixtures/migration/event-v0.json").expect("legacy event fixture");
+    let legacy_event = migrate_event_json(&legacy_event_json, &event_context, 3)
+        .expect("legacy event should migrate");
+    let legacy_event_safe = matches!(
+        legacy_event.status,
+        MigrationStatus::Migrated { from_version: 0 }
+    ) && legacy_event.value.schema_version == 1
+        && legacy_event.value.sequence == 3
+        && legacy_event.value.writer_epoch == 7
+        && matches!(legacy_event.value.kind, EventKind::EffectCommitted)
+        && legacy_event.value.effect.is_none()
+        && !legacy_event.warnings.is_empty();
+
+    let mut current_event = Event::new("migration-run", None, EventKind::RunStarted, "current");
+    current_event.sequence = 1;
+    current_event.timestamp_ms = 1;
+    current_event.spec_digest = event_context.spec_digest.clone();
+    current_event.writer_epoch = 7;
+    let current_event_json =
+        serde_json::to_string(&current_event).expect("serialize current event");
+    let current_event_result = migrate_event_json(&current_event_json, &event_context, 99)
+        .expect("current event should remain current");
+    let current_event_unchanged = matches!(current_event_result.status, MigrationStatus::Current)
+        && current_event_result.value == current_event;
+    let future_event_rejected = migrate_event_json(
+        r#"{"schema_version":2,"run_id":"future"}"#,
+        &event_context,
+        1,
+    )
+    .is_err();
+    let unknown_legacy_rejected = migrate_event_json(
+        r#"{"run_id":"legacy","step_id":null,"kind":"UnknownKind","detail":"x"}"#,
+        &event_context,
+        1,
+    )
+    .is_err();
+
+    let checkpoint_context = CheckpointMigrationContext {
+        spec_digest: "b".repeat(64),
+        last_sequence: 8,
+        writer_epoch: 4,
+    };
+    let legacy_checkpoint_json = fs::read_to_string("fixtures/migration/checkpoint-v0.json")
+        .expect("legacy checkpoint fixture");
+    let legacy_checkpoint = migrate_checkpoint_json(&legacy_checkpoint_json, &checkpoint_context)
+        .expect("legacy checkpoint should migrate");
+    let legacy_checkpoint_safe = matches!(
+        legacy_checkpoint.status,
+        MigrationStatus::Migrated { from_version: 0 }
+    ) && legacy_checkpoint.value.checkpoint_version == 1
+        && legacy_checkpoint.value.spec_digest == checkpoint_context.spec_digest
+        && legacy_checkpoint.value.last_sequence == 8
+        && !legacy_checkpoint.warnings.is_empty();
+    let current_checkpoint = RunStoreRecord {
+        checkpoint_version: 1,
+        run_id: "migration-run".to_string(),
+        spec_digest: checkpoint_context.spec_digest.clone(),
+        last_sequence: 8,
+        writer_epoch: 4,
+        applied_commit_ids: BTreeSet::new(),
+        state: RunState::from_spec(&RunSpec::new("migration-run", "migration", Vec::new())),
+    };
+    let current_checkpoint_json =
+        serde_json::to_string(&current_checkpoint).expect("serialize current checkpoint");
+    let current_checkpoint_unchanged = matches!(
+        migrate_checkpoint_json(&current_checkpoint_json, &checkpoint_context)
+            .expect("current checkpoint should remain current")
+            .status,
+        MigrationStatus::Current
+    );
+    let future_checkpoint_rejected = migrate_checkpoint_json(
+        r#"{"checkpoint_version":2,"run_id":"future"}"#,
+        &checkpoint_context,
+    )
+    .is_err();
+    let migrated_checkpoint_path = temp_generated_path("migrated-checkpoint-v1.json");
+    let checkpoint_file_migrated = matches!(
+        migrate_checkpoint_file(
+            "fixtures/migration/checkpoint-v0.json",
+            &migrated_checkpoint_path,
+            &checkpoint_context,
+        )
+        .expect("checkpoint file migration should run")
+        .status,
+        MigrationStatus::Migrated { from_version: 0 }
+    ) && migrated_checkpoint_path.exists();
+
+    let legacy_log_path = temp_generated_path("legacy-eventlog-v0.jsonl");
+    let migrated_log_path = temp_generated_path("migrated-eventlog-v1.jsonl");
+    fs::write(&legacy_log_path, &legacy_event_json).expect("write legacy event log");
+    let migration_report = migrate_event_log(&legacy_log_path, &migrated_log_path, &event_context)
+        .expect("event log migration should run");
+    let batch_migration_valid = migration_report.total_records == 1
+        && migration_report.migrated_records == 1
+        && migration_report.warnings.len() == 1;
+    let runspec_matrix = validate_run_spec_version(1).is_ok()
+        && validate_run_spec_version(0).is_err()
+        && validate_run_spec_version(2).is_err();
+
+    let passed = legacy_event_safe
+        && current_event_unchanged
+        && future_event_rejected
+        && unknown_legacy_rejected
+        && legacy_checkpoint_safe
+        && current_checkpoint_unchanged
+        && future_checkpoint_rejected
+        && checkpoint_file_migrated
+        && batch_migration_valid
+        && runspec_matrix;
+
+    CaseResult {
+        case_id: "schema_migration_compatibility_matrix".to_string(),
+        category: "migration".to_string(),
+        passed,
+        summary: "Schema migration upgrades v0, preserves v1, and rejects unknown future versions"
+            .to_string(),
+        metrics: vec![
+            Metric {
+                name: "legacy_event_safe".to_string(),
+                value: legacy_event_safe.to_string(),
+            },
+            Metric {
+                name: "legacy_checkpoint_safe".to_string(),
+                value: legacy_checkpoint_safe.to_string(),
+            },
+            Metric {
+                name: "future_versions_rejected".to_string(),
+                value: (future_event_rejected && future_checkpoint_rejected).to_string(),
+            },
+            Metric {
+                name: "batch_migration_valid".to_string(),
+                value: (batch_migration_valid && checkpoint_file_migrated).to_string(),
+            },
+        ],
+        evidence: legacy_event
+            .warnings
+            .into_iter()
+            .chain(legacy_checkpoint.warnings)
+            .collect(),
     }
 }
 
