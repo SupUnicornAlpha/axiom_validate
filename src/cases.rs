@@ -4,10 +4,12 @@ use std::process::Command;
 
 use axiom_core::{
     AuditShell, CapabilityRegistry, CompositeShell, JsonlEventLog, Kernel, LocalTransport,
-    MinimalPolicyEngine, PolicyMiddleware, QueueScheduler, RemoteTransportMock, StaticCapability,
-    TitlePolicyMiddleware,
+    MinimalPolicyEngine, PolicyMiddleware, QueueScheduler, RemoteSubRunTransportMock,
+    RemoteTransportMock, StaticCapability, TitlePolicyMiddleware,
 };
-use axiom_spec::{CapabilityLease, Effect, MergeMode, Message, RunSpec, Step, StepAction};
+use axiom_spec::{
+    CapabilityLease, ChildRunSpec, Effect, MergeMode, Message, RunSpec, Step, StepAction,
+};
 
 use crate::report::{CaseResult, Metric};
 
@@ -23,19 +25,51 @@ impl ValidationCase {
 
 pub fn all_cases() -> Vec<ValidationCase> {
     vec![
-        ValidationCase { run: golden_eventlog_match },
-        ValidationCase { run: kernel_replay_basic },
-        ValidationCase { run: shell_decision_allow_rewrite_deny },
-        ValidationCase { run: shell_policy_engine_capability_deny },
-        ValidationCase { run: tool_syscall_audit },
-        ValidationCase { run: childrun_capability_lease_denied },
-        ValidationCase { run: childrun_merge_gate },
-        ValidationCase { run: coding_patch_small },
-        ValidationCase { run: local_remote_invariance },
-        ValidationCase { run: ts_sdk_conformance_runspec },
-        ValidationCase { run: py_sdk_conformance_runspec },
-        ValidationCase { run: research_brief_agent },
-        ValidationCase { run: wrap_vs_native_audit },
+        ValidationCase {
+            run: golden_eventlog_match,
+        },
+        ValidationCase {
+            run: kernel_replay_basic,
+        },
+        ValidationCase {
+            run: shell_decision_allow_rewrite_deny,
+        },
+        ValidationCase {
+            run: shell_policy_engine_capability_deny,
+        },
+        ValidationCase {
+            run: tool_syscall_audit,
+        },
+        ValidationCase {
+            run: childrun_capability_lease_denied,
+        },
+        ValidationCase {
+            run: childrun_sandbox_inheritance,
+        },
+        ValidationCase {
+            run: childrun_merge_gate,
+        },
+        ValidationCase {
+            run: subrun_transport_invariance,
+        },
+        ValidationCase {
+            run: coding_patch_small,
+        },
+        ValidationCase {
+            run: local_remote_invariance,
+        },
+        ValidationCase {
+            run: ts_sdk_conformance_runspec,
+        },
+        ValidationCase {
+            run: py_sdk_conformance_runspec,
+        },
+        ValidationCase {
+            run: research_brief_agent,
+        },
+        ValidationCase {
+            run: wrap_vs_native_audit,
+        },
     ]
 }
 
@@ -57,7 +91,9 @@ fn golden_eventlog_match() -> CaseResult {
     );
     spec.capability_leases.push(lease("tool/echo"));
 
-    let _ = kernel.run(&spec).expect("golden eventlog run should succeed");
+    let _ = kernel
+        .run(&spec)
+        .expect("golden eventlog run should succeed");
 
     let golden_path = PathBuf::from("fixtures/eventlog/kernel_replay_basic.golden.jsonl");
     let actual = fs::read_to_string(&event_path).expect("actual eventlog readable");
@@ -172,7 +208,10 @@ fn kernel_replay_basic() -> CaseResult {
         passed,
         summary: "EventLog replay summary aligns with emitted events".to_string(),
         metrics: vec![
-            Metric { name: "event_count".to_string(), value: report.events.len().to_string() },
+            Metric {
+                name: "event_count".to_string(),
+                value: report.events.len().to_string(),
+            },
             Metric {
                 name: "replay_completed_runs".to_string(),
                 value: replay.completed_runs.to_string(),
@@ -204,7 +243,10 @@ fn shell_decision_allow_rewrite_deny() -> CaseResult {
 
     let report = kernel.run(&spec).expect("shell decisions should run");
     let denied = report.state.denied_actions.len();
-    let rewritten = report.events.iter().any(|event| event.detail.starts_with("rewrite:"));
+    let rewritten = report
+        .events
+        .iter()
+        .any(|event| event.detail.starts_with("rewrite:"));
     let passed = denied == 1 && rewritten && report.state.outputs == vec!["first", "third"];
 
     CaseResult {
@@ -213,8 +255,14 @@ fn shell_decision_allow_rewrite_deny() -> CaseResult {
         passed,
         summary: "Shell can allow, rewrite, or deny without directly producing effects".to_string(),
         metrics: vec![
-            Metric { name: "denied_actions".to_string(), value: denied.to_string() },
-            Metric { name: "output_count".to_string(), value: report.state.outputs.len().to_string() },
+            Metric {
+                name: "denied_actions".to_string(),
+                value: denied.to_string(),
+            },
+            Metric {
+                name: "output_count".to_string(),
+                value: report.state.outputs.len().to_string(),
+            },
         ],
         evidence: report
             .events
@@ -251,10 +299,11 @@ fn shell_policy_engine_capability_deny() -> CaseResult {
     let report = kernel.run(&spec).expect("policy deny should not fail run");
     let denied = report.state.denied_actions.contains(&"s2".to_string());
     let allowed_output = report.state.outputs == vec!["ok"];
-    let denial_event = report
-        .events
-        .iter()
-        .any(|event| event.detail.contains("policy_denied_capability:tool/write_patch"));
+    let denial_event = report.events.iter().any(|event| {
+        event
+            .detail
+            .contains("policy_denied_capability:tool/write_patch")
+    });
     let passed = denied && allowed_output && denial_event;
 
     CaseResult {
@@ -316,8 +365,14 @@ fn tool_syscall_audit() -> CaseResult {
         passed,
         summary: "Every tool invocation is visible in the event stream".to_string(),
         metrics: vec![
-            Metric { name: "step_started".to_string(), value: started.to_string() },
-            Metric { name: "step_completed".to_string(), value: completed.to_string() },
+            Metric {
+                name: "step_started".to_string(),
+                value: started.to_string(),
+            },
+            Metric {
+                name: "step_completed".to_string(),
+                value: completed.to_string(),
+            },
         ],
         evidence: report.state.outputs,
     }
@@ -328,7 +383,12 @@ fn childrun_capability_lease_denied() -> CaseResult {
     let child = RunSpec::new(
         "child-denied",
         "child denied",
-        vec![tool_step("child-s1", "child patch", "tool/write_patch", "fix bug")],
+        vec![tool_step(
+            "child-s1",
+            "child patch",
+            "tool/write_patch",
+            "fix bug",
+        )],
     );
     let mut parent = RunSpec::new(
         "parent-denied",
@@ -337,7 +397,7 @@ fn childrun_capability_lease_denied() -> CaseResult {
             id: "parent-s1".to_string(),
             title: "delegate child".to_string(),
             action: StepAction::Delegate {
-                child: Box::new(child),
+                child: Box::new(ChildRunSpec::new("parent-denied", child)),
                 merge_mode: MergeMode::SummaryOnly,
             },
         }],
@@ -360,6 +420,70 @@ fn childrun_capability_lease_denied() -> CaseResult {
     }
 }
 
+fn childrun_sandbox_inheritance() -> CaseResult {
+    let kernel = local_kernel();
+
+    let mut permission_child = RunSpec::new("child-permission", "child permission", Vec::new());
+    permission_child.capability_leases.push(CapabilityLease {
+        capability_id: "tool/echo".to_string(),
+        permissions: vec!["admin".to_string()],
+    });
+    let permission_result = kernel.run(&parent_for_child(
+        "parent-permission",
+        permission_child,
+        lease("tool/echo"),
+    ));
+
+    let mut namespace_child = RunSpec::new("child-namespace", "child namespace", Vec::new());
+    namespace_child.namespace.workspace_root = "/outside".to_string();
+    let namespace_result = kernel.run(&parent_for_child(
+        "parent-namespace",
+        namespace_child,
+        lease("tool/echo"),
+    ));
+
+    let mut budget_child = RunSpec::new("child-budget", "child budget", Vec::new());
+    budget_child.budget.max_steps = 129;
+    let budget_result = kernel.run(&parent_for_child(
+        "parent-budget",
+        budget_child,
+        lease("tool/echo"),
+    ));
+
+    let permission_denied =
+        format!("{permission_result:?}").contains("child_permission_not_delegated");
+    let namespace_denied =
+        format!("{namespace_result:?}").contains("child_namespace_outside_parent");
+    let budget_denied = format!("{budget_result:?}").contains("child_budget_exceeds_parent");
+
+    CaseResult {
+        case_id: "childrun_sandbox_inheritance".to_string(),
+        category: "childrun".to_string(),
+        passed: permission_denied && namespace_denied && budget_denied,
+        summary: "ChildRun permissions, namespace, and budget can only narrow parent authority"
+            .to_string(),
+        metrics: vec![
+            Metric {
+                name: "permission_denied".to_string(),
+                value: permission_denied.to_string(),
+            },
+            Metric {
+                name: "namespace_denied".to_string(),
+                value: namespace_denied.to_string(),
+            },
+            Metric {
+                name: "budget_denied".to_string(),
+                value: budget_denied.to_string(),
+            },
+        ],
+        evidence: vec![
+            format!("permission={permission_result:?}"),
+            format!("namespace={namespace_result:?}"),
+            format!("budget={budget_result:?}"),
+        ],
+    }
+}
+
 fn childrun_merge_gate() -> CaseResult {
     let kernel = local_kernel();
     let mut child = RunSpec::new(
@@ -379,7 +503,7 @@ fn childrun_merge_gate() -> CaseResult {
             id: "parent-s1".to_string(),
             title: "delegate merge".to_string(),
             action: StepAction::Delegate {
-                child: Box::new(child),
+                child: Box::new(ChildRunSpec::new("parent-merge", child)),
                 merge_mode: MergeMode::AppendMessages,
             },
         }],
@@ -388,8 +512,16 @@ fn childrun_merge_gate() -> CaseResult {
     parent.capability_leases.push(lease("tool/write_patch"));
 
     let report = kernel.run(&parent).expect("child merge should run");
-    let passed = report.state.outputs.iter().any(|output| output == "patch:apply diff")
-        && report.state.messages.iter().any(|message| message.content == "analysis ready");
+    let passed = report
+        .state
+        .outputs
+        .iter()
+        .any(|output| output == "patch:apply diff")
+        && report
+            .state
+            .messages
+            .iter()
+            .any(|message| message.content == "analysis ready");
 
     CaseResult {
         case_id: "childrun_merge_gate".to_string(),
@@ -397,10 +529,55 @@ fn childrun_merge_gate() -> CaseResult {
         passed,
         summary: "Child run results merge through explicit parent merge mode".to_string(),
         metrics: vec![
-            Metric { name: "merged_messages".to_string(), value: report.state.messages.len().to_string() },
-            Metric { name: "merged_outputs".to_string(), value: report.state.outputs.len().to_string() },
+            Metric {
+                name: "merged_messages".to_string(),
+                value: report.state.messages.len().to_string(),
+            },
+            Metric {
+                name: "merged_outputs".to_string(),
+                value: report.state.outputs.len().to_string(),
+            },
         ],
         evidence: report.state.outputs,
+    }
+}
+
+fn subrun_transport_invariance() -> CaseResult {
+    let spec = coding_patch_small_spec();
+    let local_report = local_kernel().run(&spec).expect("local subrun should run");
+    let remote_kernel = Kernel::with_subrun_transport(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        RemoteSubRunTransportMock,
+        None,
+    );
+    let remote_report = remote_kernel
+        .run(&spec)
+        .expect("remote subrun mock should run");
+    let state_match = local_report.state == remote_report.state;
+    let event_kinds_match = local_report
+        .events
+        .iter()
+        .map(|event| &event.kind)
+        .eq(remote_report.events.iter().map(|event| &event.kind));
+
+    CaseResult {
+        case_id: "subrun_transport_invariance".to_string(),
+        category: "childrun".to_string(),
+        passed: state_match && event_kinds_match,
+        summary: "Local and remote-mock ChildRun transports preserve kernel semantics".to_string(),
+        metrics: vec![
+            Metric {
+                name: "state_match".to_string(),
+                value: state_match.to_string(),
+            },
+            Metric {
+                name: "event_kinds_match".to_string(),
+                value: event_kinds_match.to_string(),
+            },
+        ],
+        evidence: remote_report.state.outputs,
     }
 }
 
@@ -410,33 +587,61 @@ fn coding_patch_small() -> CaseResult {
     let report = kernel.run(&spec).expect("coding_patch_small should run");
 
     let task_success = report.state.outputs.iter().any(|output| output == "hello")
-        && report.state.outputs.iter().any(|output| output == "patch:replace hi with hello");
-    let review_merged = report.state.messages.iter().any(|message| message.content == "approved");
+        && report
+            .state
+            .outputs
+            .iter()
+            .any(|output| output == "patch:replace hi with hello");
+    let review_merged = report
+        .state
+        .messages
+        .iter()
+        .any(|message| message.content == "approved");
     let passed = task_success && review_merged;
 
     CaseResult {
         case_id: "coding_patch_small".to_string(),
         category: "agents".to_string(),
         passed,
-        summary: "Minimal coding agent can patch, delegate review, and produce audited output".to_string(),
+        summary: "Minimal coding agent can patch, delegate review, and produce audited output"
+            .to_string(),
         metrics: vec![
-            Metric { name: "task_success".to_string(), value: if task_success { "1.0" } else { "0.0" }.to_string() },
-            Metric { name: "review_merged".to_string(), value: if review_merged { "1.0" } else { "0.0" }.to_string() },
-            Metric { name: "event_count".to_string(), value: report.events.len().to_string() },
+            Metric {
+                name: "task_success".to_string(),
+                value: if task_success { "1.0" } else { "0.0" }.to_string(),
+            },
+            Metric {
+                name: "review_merged".to_string(),
+                value: if review_merged { "1.0" } else { "0.0" }.to_string(),
+            },
+            Metric {
+                name: "event_count".to_string(),
+                value: report.events.len().to_string(),
+            },
         ],
         evidence: report
             .state
             .outputs
             .into_iter()
-            .chain(report.state.messages.into_iter().map(|message| message.content))
+            .chain(
+                report
+                    .state
+                    .messages
+                    .into_iter()
+                    .map(|message| message.content),
+            )
             .collect(),
     }
 }
 
 fn local_remote_invariance() -> CaseResult {
     let spec = coding_patch_small_spec();
-    let local = local_kernel().run(&spec).expect("local invariance run should succeed");
-    let remote = remote_kernel().run(&spec).expect("remote invariance run should succeed");
+    let local = local_kernel()
+        .run(&spec)
+        .expect("local invariance run should succeed");
+    let remote = remote_kernel()
+        .run(&spec)
+        .expect("remote invariance run should succeed");
 
     let same_outputs = local.state.outputs == remote.state.outputs;
     let same_messages = local.state.messages == remote.state.messages;
@@ -457,13 +662,29 @@ fn local_remote_invariance() -> CaseResult {
         case_id: "local_remote_invariance".to_string(),
         category: "transport".to_string(),
         passed,
-        summary: "LocalTransport and RemoteTransportMock preserve the same observable semantics".to_string(),
+        summary: "LocalTransport and RemoteTransportMock preserve the same observable semantics"
+            .to_string(),
         metrics: vec![
-            Metric { name: "same_outputs".to_string(), value: same_outputs.to_string() },
-            Metric { name: "same_messages".to_string(), value: same_messages.to_string() },
-            Metric { name: "same_event_details".to_string(), value: same_event_details.to_string() },
-            Metric { name: "local_event_count".to_string(), value: local.events.len().to_string() },
-            Metric { name: "remote_event_count".to_string(), value: remote.events.len().to_string() },
+            Metric {
+                name: "same_outputs".to_string(),
+                value: same_outputs.to_string(),
+            },
+            Metric {
+                name: "same_messages".to_string(),
+                value: same_messages.to_string(),
+            },
+            Metric {
+                name: "same_event_details".to_string(),
+                value: same_event_details.to_string(),
+            },
+            Metric {
+                name: "local_event_count".to_string(),
+                value: local.events.len().to_string(),
+            },
+            Metric {
+                name: "remote_event_count".to_string(),
+                value: remote.events.len().to_string(),
+            },
         ],
         evidence: vec![
             format!("local_outputs={:?}", local.state.outputs),
@@ -475,7 +696,8 @@ fn local_remote_invariance() -> CaseResult {
 }
 
 fn ts_sdk_conformance_runspec() -> CaseResult {
-    let script = PathBuf::from("../axiom_kernal/sdks/typescript/scripts/build-coding-patch-small.mjs");
+    let script =
+        PathBuf::from("../axiom_kernal/sdks/typescript/scripts/build-coding-patch-small.mjs");
     let compare_script = PathBuf::from("runners/compare-json.mjs");
     let fixture_path = PathBuf::from("fixtures/runspec/coding_patch_small.json");
     sdk_conformance_case(
@@ -537,9 +759,18 @@ fn sdk_conformance_case(
         passed,
         summary: summary.to_string(),
         metrics: vec![
-            Metric { name: "generator_exit_success".to_string(), value: output.status.success().to_string() },
-            Metric { name: "json_match".to_string(), value: equal.to_string() },
-            Metric { name: "generated_bytes".to_string(), value: generated.len().to_string() },
+            Metric {
+                name: "generator_exit_success".to_string(),
+                value: output.status.success().to_string(),
+            },
+            Metric {
+                name: "json_match".to_string(),
+                value: equal.to_string(),
+            },
+            Metric {
+                name: "generated_bytes".to_string(),
+                value: generated.len().to_string(),
+            },
         ],
         evidence: vec![
             format!("program={program}"),
@@ -556,34 +787,67 @@ fn research_brief_agent() -> CaseResult {
     let spec = research_brief_spec();
     let report = kernel.run(&spec).expect("research brief should run");
 
-    let brief_output = report.state.outputs.iter().any(|output| output == "brief:cloud database market");
-    let publish_output = report.state.outputs.iter().any(|output| output == "brief ready");
-    let tool_message = report.state.messages.iter().any(|message| message.content.contains("key_points=3"));
+    let brief_output = report
+        .state
+        .outputs
+        .iter()
+        .any(|output| output == "brief:cloud database market");
+    let publish_output = report
+        .state
+        .outputs
+        .iter()
+        .any(|output| output == "brief ready");
+    let tool_message = report
+        .state
+        .messages
+        .iter()
+        .any(|message| message.content.contains("key_points=3"));
     let passed = brief_output && publish_output && tool_message;
 
     CaseResult {
         case_id: "research_brief_agent".to_string(),
         category: "agents".to_string(),
         passed,
-        summary: "Research brief agent can compose and publish a brief with auditable outputs".to_string(),
+        summary: "Research brief agent can compose and publish a brief with auditable outputs"
+            .to_string(),
         metrics: vec![
-            Metric { name: "brief_completeness".to_string(), value: passed.to_string() },
-            Metric { name: "event_count".to_string(), value: report.events.len().to_string() },
-            Metric { name: "output_count".to_string(), value: report.state.outputs.len().to_string() },
+            Metric {
+                name: "brief_completeness".to_string(),
+                value: passed.to_string(),
+            },
+            Metric {
+                name: "event_count".to_string(),
+                value: report.events.len().to_string(),
+            },
+            Metric {
+                name: "output_count".to_string(),
+                value: report.state.outputs.len().to_string(),
+            },
         ],
         evidence: report
             .state
             .outputs
             .into_iter()
-            .chain(report.state.messages.into_iter().map(|message| message.content))
+            .chain(
+                report
+                    .state
+                    .messages
+                    .into_iter()
+                    .map(|message| message.content),
+            )
             .collect(),
     }
 }
 
 fn wrap_vs_native_audit() -> CaseResult {
     let spec = coding_patch_small_spec();
-    let wrapped = local_kernel().run(&spec).expect("wrapped kernel run should succeed");
-    let native_outputs = vec!["patch:replace hi with hello".to_string(), "hello".to_string()];
+    let wrapped = local_kernel()
+        .run(&spec)
+        .expect("wrapped kernel run should succeed");
+    let native_outputs = vec![
+        "patch:replace hi with hello".to_string(),
+        "hello".to_string(),
+    ];
     let native_audit_events = 0usize;
 
     let wrapped_event_count = wrapped.events.len();
@@ -608,12 +872,26 @@ fn wrap_vs_native_audit() -> CaseResult {
         case_id: "wrap_vs_native_audit".to_string(),
         category: "wrap".to_string(),
         passed,
-        summary: "Wrap mode preserves task result while adding audit visibility over native execution".to_string(),
+        summary:
+            "Wrap mode preserves task result while adding audit visibility over native execution"
+                .to_string(),
         metrics: vec![
-            Metric { name: "outputs_equal".to_string(), value: outputs_equal.to_string() },
-            Metric { name: "wrapped_event_count".to_string(), value: wrapped_event_count.to_string() },
-            Metric { name: "wrapped_audit_coverage".to_string(), value: wrapped_audit_coverage.to_string() },
-            Metric { name: "native_audit_coverage".to_string(), value: native_audit_events.to_string() },
+            Metric {
+                name: "outputs_equal".to_string(),
+                value: outputs_equal.to_string(),
+            },
+            Metric {
+                name: "wrapped_event_count".to_string(),
+                value: wrapped_event_count.to_string(),
+            },
+            Metric {
+                name: "wrapped_audit_coverage".to_string(),
+                value: wrapped_audit_coverage.to_string(),
+            },
+            Metric {
+                name: "native_audit_coverage".to_string(),
+                value: native_audit_events.to_string(),
+            },
         ],
         evidence: vec![
             format!("wrapped_outputs={:?}", wrapped.state.outputs),
@@ -624,7 +902,29 @@ fn wrap_vs_native_audit() -> CaseResult {
 }
 
 fn local_kernel() -> Kernel<QueueScheduler, AuditShell, LocalTransport> {
-    Kernel::new(QueueScheduler, AuditShell, LocalTransport::new(base_registry()), None)
+    Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        None,
+    )
+}
+
+fn parent_for_child(parent_run_id: &str, child: RunSpec, parent_lease: CapabilityLease) -> RunSpec {
+    let mut parent = RunSpec::new(
+        parent_run_id,
+        "sandbox inheritance parent",
+        vec![Step {
+            id: "delegate".to_string(),
+            title: "delegate child".to_string(),
+            action: StepAction::Delegate {
+                child: Box::new(ChildRunSpec::new(parent_run_id, child)),
+                merge_mode: MergeMode::SummaryOnly,
+            },
+        }],
+    );
+    parent.capability_leases.push(parent_lease);
+    parent
 }
 
 fn remote_kernel() -> Kernel<QueueScheduler, AuditShell, RemoteTransportMock> {
@@ -641,7 +941,12 @@ fn coding_patch_small_spec() -> RunSpec {
         "reviewer-child",
         "reviewer child",
         vec![
-            msg_step("review-1", "review findings", "assistant", "patch looks safe"),
+            msg_step(
+                "review-1",
+                "review findings",
+                "assistant",
+                "patch looks safe",
+            ),
             msg_step("review-2", "review verdict", "assistant", "approved"),
         ],
     );
@@ -651,12 +956,17 @@ fn coding_patch_small_spec() -> RunSpec {
         "coding patch small",
         vec![
             msg_step("s1", "understand task", "user", "fix greeting output"),
-            tool_step("s2", "draft patch", "tool/write_patch", "replace hi with hello"),
+            tool_step(
+                "s2",
+                "draft patch",
+                "tool/write_patch",
+                "replace hi with hello",
+            ),
             Step {
                 id: "s3".to_string(),
                 title: "delegate reviewer".to_string(),
                 action: StepAction::Delegate {
-                    child: Box::new(reviewer),
+                    child: Box::new(ChildRunSpec::new("coding-patch-small", reviewer)),
                     merge_mode: MergeMode::AppendMessages,
                 },
             },
@@ -673,8 +983,18 @@ fn research_brief_spec() -> RunSpec {
         "research-brief-agent",
         "research brief agent",
         vec![
-            msg_step("r1", "collect ask", "user", "summarize cloud database market"),
-            tool_step("r2", "compose brief", "tool/compose_brief", "cloud database market"),
+            msg_step(
+                "r1",
+                "collect ask",
+                "user",
+                "summarize cloud database market",
+            ),
+            tool_step(
+                "r2",
+                "compose brief",
+                "tool/compose_brief",
+                "cloud database market",
+            ),
             tool_step("r3", "publish brief", "tool/echo", "brief ready"),
         ],
     );
@@ -703,7 +1023,10 @@ fn msg_step(id: &str, title: &str, role: &str, content: &str) -> Step {
     Step {
         id: id.to_string(),
         title: title.to_string(),
-        action: StepAction::Message { role: role.to_string(), content: content.to_string() },
+        action: StepAction::Message {
+            role: role.to_string(),
+            content: content.to_string(),
+        },
     }
 }
 
@@ -719,5 +1042,8 @@ fn tool_step(id: &str, title: &str, capability_id: &str, input: &str) -> Step {
 }
 
 fn lease(capability_id: &str) -> CapabilityLease {
-    CapabilityLease { capability_id: capability_id.to_string(), permissions: vec!["invoke".to_string()] }
+    CapabilityLease {
+        capability_id: capability_id.to_string(),
+        permissions: vec!["invoke".to_string()],
+    }
 }
