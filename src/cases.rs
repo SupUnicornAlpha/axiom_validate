@@ -1,14 +1,16 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 
 use axiom_core::{
-    AuditShell, CapabilityRegistry, CompositeShell, JsonlEventLog, Kernel, LocalTransport,
-    MinimalPolicyEngine, PolicyMiddleware, QueueScheduler, RemoteSubRunTransportMock,
-    RemoteTransportMock, StaticCapability, TitlePolicyMiddleware,
+    AuditShell, CapabilityRegistry, CompositeShell, JsonlEventLog, Kernel, LocalSubRunTransport,
+    LocalTransport, MemoryRunStore, MinimalPolicyEngine, PolicyMiddleware, QueueScheduler,
+    RemoteSubRunTransportMock, RemoteTransportMock, RunStore, StaticCapability,
+    TitlePolicyMiddleware,
 };
 use axiom_spec::{
-    CapabilityLease, ChildRunSpec, Effect, MergeMode, Message, RunSpec, Step, StepAction,
+    CapabilityLease, ChildRunSpec, EffectProposal, MergeMode, Message, RunSpec, Step, StepAction,
 };
 
 use crate::report::{CaseResult, Metric};
@@ -30,6 +32,15 @@ pub fn all_cases() -> Vec<ValidationCase> {
         },
         ValidationCase {
             run: kernel_replay_basic,
+        },
+        ValidationCase {
+            run: effect_commit_boundary,
+        },
+        ValidationCase {
+            run: eventlog_failure_is_fatal,
+        },
+        ValidationCase {
+            run: runstore_checkpoint_resume,
         },
         ValidationCase {
             run: shell_decision_allow_rewrite_deny,
@@ -142,7 +153,7 @@ fn base_registry() -> CapabilityRegistry {
     registry.register(
         "tool/echo",
         StaticCapability::new(|input, _ctx| {
-            Ok(Effect {
+            Ok(EffectProposal {
                 summary: "tool_echo".to_string(),
                 messages: vec![Message {
                     role: "tool".to_string(),
@@ -155,7 +166,7 @@ fn base_registry() -> CapabilityRegistry {
     registry.register(
         "tool/write_patch",
         StaticCapability::new(|input, _ctx| {
-            Ok(Effect {
+            Ok(EffectProposal {
                 summary: "tool_write_patch".to_string(),
                 messages: vec![],
                 outputs: vec![format!("patch:{input}")],
@@ -165,7 +176,7 @@ fn base_registry() -> CapabilityRegistry {
     registry.register(
         "tool/compose_brief",
         StaticCapability::new(|input, _ctx| {
-            Ok(Effect {
+            Ok(EffectProposal {
                 summary: "tool_compose_brief".to_string(),
                 messages: vec![Message {
                     role: "tool".to_string(),
@@ -218,6 +229,167 @@ fn kernel_replay_basic() -> CaseResult {
             },
         ],
         evidence: vec![format!("event_log={}", event_path.display())],
+    }
+}
+
+fn effect_commit_boundary() -> CaseResult {
+    let report = local_kernel()
+        .run(&RunSpec::new(
+            "effect-commit-boundary",
+            "effect commit boundary",
+            vec![msg_step("s1", "commit message", "assistant", "committed")],
+        ))
+        .expect("effect commit case should run");
+    let proposed_index = report
+        .events
+        .iter()
+        .position(|event| matches!(event.kind, axiom_spec::EventKind::EffectProposed));
+    let committed_index = report
+        .events
+        .iter()
+        .position(|event| matches!(event.kind, axiom_spec::EventKind::EffectCommitted));
+    let ordered = matches!((proposed_index, committed_index), (Some(proposed), Some(committed)) if proposed < committed);
+    let applied_once =
+        report.state.messages.len() == 1 && report.state.messages[0].content == "committed";
+
+    CaseResult {
+        case_id: "effect_commit_boundary".to_string(),
+        category: "kernel".to_string(),
+        passed: ordered && applied_once,
+        summary: "Drivers propose effects and only the kernel commits state changes".to_string(),
+        metrics: vec![
+            Metric {
+                name: "proposal_before_commit".to_string(),
+                value: ordered.to_string(),
+            },
+            Metric {
+                name: "state_applied_once".to_string(),
+                value: applied_once.to_string(),
+            },
+        ],
+        evidence: report
+            .events
+            .iter()
+            .map(|event| format!("{:?}:{}", event.kind, event.detail))
+            .collect(),
+    }
+}
+
+fn eventlog_failure_is_fatal() -> CaseResult {
+    let blocker = temp_event_path("eventlog-parent-file");
+    fs::write(&blocker, "not a directory").expect("write eventlog blocker");
+    let event_path = blocker.join("events.jsonl");
+    let kernel = Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        Some(JsonlEventLog::new(event_path)),
+    );
+    let result = kernel.run(&RunSpec::new(
+        "eventlog-failure",
+        "eventlog failure",
+        Vec::new(),
+    ));
+    let fatal = matches!(&result, Err(axiom_core::KernelError::EventLog(_)));
+
+    CaseResult {
+        case_id: "eventlog_failure_is_fatal".to_string(),
+        category: "eventlog".to_string(),
+        passed: fatal,
+        summary: "Kernel aborts instead of executing without an audit log".to_string(),
+        metrics: vec![Metric {
+            name: "write_failure_aborted".to_string(),
+            value: fatal.to_string(),
+        }],
+        evidence: vec![format!("result={result:?}")],
+    }
+}
+
+fn runstore_checkpoint_resume() -> CaseResult {
+    let store = MemoryRunStore::new();
+    let mut failing_registry = CapabilityRegistry::new();
+    failing_registry.register(
+        "tool/unstable",
+        StaticCapability::new(|_, _| Err("transient_driver_failure".to_string())),
+    );
+    let mut spec = RunSpec::new(
+        "checkpoint-resume",
+        "checkpoint resume",
+        vec![
+            msg_step("s1", "persist first step", "assistant", "first-step"),
+            tool_step("s2", "retry unstable tool", "tool/unstable", "resume-ok"),
+        ],
+    );
+    spec.capability_leases.push(lease("tool/unstable"));
+
+    let failing_kernel = Kernel::with_services(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(failing_registry),
+        LocalSubRunTransport,
+        None,
+        Arc::new(store.clone()),
+    );
+    let first_result = failing_kernel.run(&spec);
+    let checkpoint = store
+        .get(&spec.run_id)
+        .expect("checkpoint store readable")
+        .expect("checkpoint exists");
+
+    let mut recovered_registry = CapabilityRegistry::new();
+    recovered_registry.register(
+        "tool/unstable",
+        StaticCapability::new(|input, _| {
+            Ok(EffectProposal {
+                summary: "unstable_recovered".to_string(),
+                messages: Vec::new(),
+                outputs: vec![input.to_string()],
+            })
+        }),
+    );
+    let recovered_kernel = Kernel::with_services(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(recovered_registry),
+        LocalSubRunTransport,
+        None,
+        Arc::new(store),
+    );
+    let resumed = recovered_kernel
+        .resume(&spec)
+        .expect("checkpoint should resume");
+    let resumed_at_second_step = checkpoint.state.next_step_index == 1
+        && !resumed.events.iter().any(|event| {
+            event.step_id.as_deref() == Some("s1")
+                && matches!(event.kind, axiom_spec::EventKind::StepStarted)
+        });
+    let completed = resumed.state.status == axiom_spec::RunStatus::Completed
+        && resumed.state.messages.len() == 1
+        && resumed.state.outputs == vec!["resume-ok"];
+
+    CaseResult {
+        case_id: "runstore_checkpoint_resume".to_string(),
+        category: "recovery".to_string(),
+        passed: first_result.is_err() && resumed_at_second_step && completed,
+        summary: "A failed run resumes from its last committed checkpoint".to_string(),
+        metrics: vec![
+            Metric {
+                name: "checkpoint_step".to_string(),
+                value: checkpoint.state.next_step_index.to_string(),
+            },
+            Metric {
+                name: "first_step_replayed".to_string(),
+                value: (!resumed_at_second_step).to_string(),
+            },
+            Metric {
+                name: "resume_completed".to_string(),
+                value: completed.to_string(),
+            },
+        ],
+        evidence: vec![
+            format!("first_result={first_result:?}"),
+            format!("resumed_outputs={:?}", resumed.state.outputs),
+        ],
     }
 }
 
@@ -859,7 +1031,8 @@ fn wrap_vs_native_audit() -> CaseResult {
                 event.kind,
                 axiom_spec::EventKind::StepStarted
                     | axiom_spec::EventKind::StepCompleted
-                    | axiom_spec::EventKind::EffectApplied
+                    | axiom_spec::EventKind::EffectProposed
+                    | axiom_spec::EventKind::EffectCommitted
                     | axiom_spec::EventKind::ShellDecision
             )
         })

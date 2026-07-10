@@ -53,6 +53,10 @@ pub fn render_markdown_report(results: &[CaseResult]) -> String {
     }
     out.push_str("## Evaluation Methods\n\n");
     out.push_str("- `replay_determinism`: 对齐开源 trace replay / event sourcing 验证思路。\n");
+    out.push_str(
+        "- `effect_commit_boundary`: 验证 driver proposal 与 Kernel commit 的唯一状态提交边界。\n",
+    );
+    out.push_str("- `checkpoint_resume`: 验证失败后从最后成功 step 恢复且不重复已提交 effect。\n");
     out.push_str("- `audit_coverage`: 对齐工具调用审计覆盖率与治理可见性验证。\n");
     out.push_str("- `permission_denial_rate`: 对齐 sandbox / lease 越权拦截验证。\n");
     out.push_str("- `merge_semantics`: 对齐 multi-agent / subagent 合并语义验证。\n");
