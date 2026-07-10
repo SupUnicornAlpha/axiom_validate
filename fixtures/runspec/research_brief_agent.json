@@ -1,4 +1,5 @@
 {
+  "schema_version": 1,
   "run_id": "research-brief-agent",
   "name": "research brief agent",
   "namespace": {

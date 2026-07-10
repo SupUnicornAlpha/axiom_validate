@@ -1,15 +1,15 @@
-{"run_id":"kernel-replay-basic","step_id":null,"kind":"RunCreated","detail":"kernel replay basic"}
-{"run_id":"kernel-replay-basic","step_id":null,"kind":"RunStarted","detail":"kernel_started"}
-{"run_id":"kernel-replay-basic","step_id":"s1","kind":"StepProposed","detail":"user says hi"}
-{"run_id":"kernel-replay-basic","step_id":"s1","kind":"ShellDecision","detail":"allow"}
-{"run_id":"kernel-replay-basic","step_id":"s1","kind":"StepStarted","detail":"user says hi"}
-{"run_id":"kernel-replay-basic","step_id":"s1","kind":"StepCompleted","detail":"message:user"}
-{"run_id":"kernel-replay-basic","step_id":"s1","kind":"EffectProposed","detail":"message:user"}
-{"run_id":"kernel-replay-basic","step_id":"s1","kind":"EffectCommitted","detail":"message:user"}
-{"run_id":"kernel-replay-basic","step_id":"s2","kind":"StepProposed","detail":"echo hi"}
-{"run_id":"kernel-replay-basic","step_id":"s2","kind":"ShellDecision","detail":"allow"}
-{"run_id":"kernel-replay-basic","step_id":"s2","kind":"StepStarted","detail":"echo hi"}
-{"run_id":"kernel-replay-basic","step_id":"s2","kind":"StepCompleted","detail":"tool_echo"}
-{"run_id":"kernel-replay-basic","step_id":"s2","kind":"EffectProposed","detail":"tool_echo"}
-{"run_id":"kernel-replay-basic","step_id":"s2","kind":"EffectCommitted","detail":"tool_echo"}
-{"run_id":"kernel-replay-basic","step_id":null,"kind":"RunCompleted","detail":"ok"}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":null,"kind":"RunCreated","detail":"kernel replay basic","sequence":1,"timestamp_ms":0,"spec_digest":"8ee35f4204e25ea6cfea1a8b998e45832788d3ea6a3d1e3de6375890e4edfcb7","causation_id":null,"commit_id":null,"effect":null}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":null,"kind":"RunStarted","detail":"kernel_started","sequence":2,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:1","commit_id":null,"effect":null}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":"s1","kind":"StepProposed","detail":"user says hi","sequence":3,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:2","commit_id":null,"effect":null}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":"s1","kind":"ShellDecision","detail":"allow","sequence":4,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:3","commit_id":null,"effect":null}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":"s1","kind":"StepStarted","detail":"user says hi","sequence":5,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:4","commit_id":null,"effect":null}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":"s1","kind":"StepCompleted","detail":"message:user","sequence":6,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:5","commit_id":null,"effect":null}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":"s1","kind":"EffectProposed","detail":"message:user","sequence":7,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:6","commit_id":null,"effect":null}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":"s1","kind":"EffectCommitted","detail":"message:user","sequence":8,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:7","commit_id":"kernel-replay-basic:s1:bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","effect":{"summary":"message:user","messages":[{"role":"user","content":"hi"}],"outputs":[]}}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":"s2","kind":"StepProposed","detail":"echo hi","sequence":9,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:8","commit_id":null,"effect":null}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":"s2","kind":"ShellDecision","detail":"allow","sequence":10,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:9","commit_id":null,"effect":null}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":"s2","kind":"StepStarted","detail":"echo hi","sequence":11,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:10","commit_id":null,"effect":null}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":"s2","kind":"StepCompleted","detail":"tool_echo","sequence":12,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:11","commit_id":null,"effect":null}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":"s2","kind":"EffectProposed","detail":"tool_echo","sequence":13,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:12","commit_id":null,"effect":null}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":"s2","kind":"EffectCommitted","detail":"tool_echo","sequence":14,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:13","commit_id":"kernel-replay-basic:s2:bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","effect":{"summary":"tool_echo","messages":[{"role":"tool","content":"echo:hi"}],"outputs":["hi"]}}
+{"schema_version":1,"run_id":"kernel-replay-basic","step_id":null,"kind":"RunCompleted","detail":"ok","sequence":15,"timestamp_ms":0,"spec_digest":"bcac0298bd7365c1f6d8527770c46645cd1335f20597cf8fa12f3c85972d6a5b","causation_id":"kernel-replay-basic:14","commit_id":null,"effect":null}

@@ -1,4 +1,5 @@
 {
+  "schema_version": 1,
   "run_id": "coding-patch-small",
   "name": "coding patch small",
   "namespace": {
@@ -44,37 +45,44 @@
         "kind": "delegate",
         "merge_mode": "append_messages",
         "child": {
-          "run_id": "reviewer-child",
-          "name": "reviewer child",
-          "namespace": {
-            "workspace_root": ".",
-            "visible_capabilities": []
-          },
-          "budget": {
-            "max_steps": 128
-          },
-          "capability_leases": [],
-          "steps": [
-            {
-              "id": "review-1",
-              "title": "review findings",
-              "action": {
-                "kind": "message",
-                "role": "assistant",
-                "content": "patch looks safe"
-              }
+          "parent_run_id": "coding-patch-small",
+          "run": {
+            "schema_version": 1,
+            "run_id": "reviewer-child",
+            "name": "reviewer child",
+            "namespace": {
+              "workspace_root": ".",
+              "visible_capabilities": []
             },
-            {
-              "id": "review-2",
-              "title": "review verdict",
-              "action": {
-                "kind": "message",
-                "role": "assistant",
-                "content": "approved"
+            "budget": {
+              "max_steps": 128
+            },
+            "capability_leases": [],
+            "steps": [
+              {
+                "id": "review-1",
+                "title": "review findings",
+                "action": {
+                  "kind": "message",
+                  "role": "assistant",
+                  "content": "patch looks safe"
+                }
+              },
+              {
+                "id": "review-2",
+                "title": "review verdict",
+                "action": {
+                  "kind": "message",
+                  "role": "assistant",
+                  "content": "approved"
+                }
               }
-            }
-          ],
-          "metadata": {}
+            ],
+            "metadata": {}
+          },
+          "memory_view": [],
+          "sandbox_profile": "default-deny",
+          "return_contract": "effect-proposals-v1"
         }
       }
     },

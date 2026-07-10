@@ -1,13 +1,14 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axiom_core::{
-    AuditShell, CapabilityRegistry, CompositeShell, JsonlEventLog, Kernel, LocalSubRunTransport,
-    LocalTransport, MemoryRunStore, MinimalPolicyEngine, PolicyMiddleware, QueueScheduler,
-    RemoteSubRunTransportMock, RemoteTransportMock, RunStore, StaticCapability,
-    TitlePolicyMiddleware,
+    AuditShell, CapabilityRegistry, CompositeShell, FileRunStore, JsonlEventLog, Kernel,
+    LocalSubRunTransport, LocalTransport, MemoryRunStore, MinimalPolicyEngine, PolicyMiddleware,
+    QueueScheduler, RemoteSubRunTransportMock, RemoteTransportMock, RunStore, RunStoreRecord,
+    StaticCapability, TitlePolicyMiddleware,
 };
 use axiom_spec::{
     CapabilityLease, ChildRunSpec, EffectProposal, MergeMode, Message, RunSpec, Step, StepAction,
@@ -43,6 +44,9 @@ pub fn all_cases() -> Vec<ValidationCase> {
             run: runstore_checkpoint_resume,
         },
         ValidationCase {
+            run: journal_checkpoint_crash_recovery,
+        },
+        ValidationCase {
             run: shell_decision_allow_rewrite_deny,
         },
         ValidationCase {
@@ -74,6 +78,9 @@ pub fn all_cases() -> Vec<ValidationCase> {
         },
         ValidationCase {
             run: py_sdk_conformance_runspec,
+        },
+        ValidationCase {
+            run: sdk_spec_digest_conformance,
         },
         ValidationCase {
             run: research_brief_agent,
@@ -108,7 +115,6 @@ fn golden_eventlog_match() -> CaseResult {
 
     let golden_path = PathBuf::from("fixtures/eventlog/kernel_replay_basic.golden.jsonl");
     let actual = fs::read_to_string(&event_path).expect("actual eventlog readable");
-    let golden = fs::read_to_string(&golden_path).expect("golden eventlog readable");
 
     let validator_script = PathBuf::from("runners/validate-eventlog.mjs");
     let validator = Command::new("node")
@@ -118,7 +124,13 @@ fn golden_eventlog_match() -> CaseResult {
         .expect("eventlog validator should run");
     let validator_stdout = String::from_utf8(validator.stdout).expect("validator output utf8");
     let valid_lines = validator_stdout.contains("\"invalidLines\":0");
-    let content_match = actual == golden;
+    let comparator = Command::new("node")
+        .arg("runners/compare-eventlog.mjs")
+        .arg(&event_path)
+        .arg(&golden_path)
+        .output()
+        .expect("eventlog comparator should run");
+    let content_match = comparator.status.success();
     let passed = validator.status.success() && valid_lines && content_match;
 
     CaseResult {
@@ -389,6 +401,117 @@ fn runstore_checkpoint_resume() -> CaseResult {
         evidence: vec![
             format!("first_result={first_result:?}"),
             format!("resumed_outputs={:?}", resumed.state.outputs),
+        ],
+    }
+}
+
+#[derive(Clone)]
+struct FailCommitCheckpointOnce {
+    inner: Arc<dyn RunStore>,
+    failed: Arc<AtomicBool>,
+}
+
+impl FailCommitCheckpointOnce {
+    fn new(inner: Arc<dyn RunStore>) -> Self {
+        Self {
+            inner,
+            failed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl RunStore for FailCommitCheckpointOnce {
+    fn put(&self, record: RunStoreRecord) -> Result<(), String> {
+        if record.state.next_step_index == 1 && !self.failed.swap(true, Ordering::SeqCst) {
+            return Err("simulated_crash_after_effect_commit".to_string());
+        }
+        self.inner.put(record)
+    }
+
+    fn get(&self, run_id: &str) -> Result<Option<RunStoreRecord>, String> {
+        self.inner.get(run_id)
+    }
+
+    fn list_run_ids(&self) -> Result<Vec<String>, String> {
+        self.inner.list_run_ids()
+    }
+}
+
+fn journal_checkpoint_crash_recovery() -> CaseResult {
+    let checkpoint_root = PathBuf::from("reports/checkpoints/journal-crash-window");
+    let _ = fs::remove_dir_all(&checkpoint_root);
+    let journal_path = temp_event_path("journal-checkpoint-crash-recovery");
+    let durable_store = Arc::new(FileRunStore::new(&checkpoint_root));
+    let fail_once_store = Arc::new(FailCommitCheckpointOnce::new(durable_store));
+    let spec = RunSpec::new(
+        "journal-crash-window",
+        "journal crash window",
+        vec![msg_step("s1", "commit once", "assistant", "exactly-once")],
+    );
+    let crashing_kernel = Kernel::with_services(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        LocalSubRunTransport,
+        Some(Arc::new(JsonlEventLog::new(&journal_path))),
+        fail_once_store,
+    );
+    let crash_result = crashing_kernel.run(&spec);
+    drop(crashing_kernel);
+
+    let restarted_store = Arc::new(FileRunStore::new(&checkpoint_root));
+    let restarted_kernel = Kernel::with_services(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        LocalSubRunTransport,
+        Some(Arc::new(JsonlEventLog::new(&journal_path))),
+        restarted_store.clone(),
+    );
+    let recovered = restarted_kernel
+        .resume(&spec)
+        .expect("journal should close checkpoint crash window");
+    let recovered_again = restarted_kernel
+        .resume(&spec)
+        .expect("second resume must be idempotent");
+    let durable_checkpoint = restarted_store
+        .get(&spec.run_id)
+        .expect("durable checkpoint readable")
+        .expect("durable checkpoint exists");
+    let exactly_once = recovered.state.messages.len() == 1
+        && recovered.state.messages[0].content == "exactly-once"
+        && recovered_again.state.messages.len() == 1
+        && durable_checkpoint.applied_commit_ids.len() == 1;
+    let sequence_continued = durable_checkpoint.last_sequence >= 10;
+    let persisted = FileRunStore::new(&checkpoint_root)
+        .list_run_ids()
+        .expect("file store list readable")
+        == vec![spec.run_id.clone()];
+
+    CaseResult {
+        case_id: "journal_checkpoint_crash_recovery".to_string(),
+        category: "recovery".to_string(),
+        passed: crash_result.is_err() && exactly_once && sequence_continued && persisted,
+        summary: "Journal replay closes the committed-event/checkpoint crash window exactly once"
+            .to_string(),
+        metrics: vec![
+            Metric {
+                name: "exactly_once".to_string(),
+                value: exactly_once.to_string(),
+            },
+            Metric {
+                name: "last_sequence".to_string(),
+                value: durable_checkpoint.last_sequence.to_string(),
+            },
+            Metric {
+                name: "durable_restart".to_string(),
+                value: persisted.to_string(),
+            },
+        ],
+        evidence: vec![
+            format!("crash_result={crash_result:?}"),
+            format!("checkpoint_root={}", checkpoint_root.display()),
+            format!("commit_ids={:?}", durable_checkpoint.applied_commit_ids),
         ],
     }
 }
@@ -896,6 +1019,60 @@ fn py_sdk_conformance_runspec() -> CaseResult {
         fixture_path,
         "coding_patch_small.py.generated.json",
     )
+}
+
+fn sdk_spec_digest_conformance() -> CaseResult {
+    let rust_digest = coding_patch_small_spec().digest();
+    let ts_path = temp_generated_path("digest-ts-coding-patch-small.json");
+    let py_path = temp_generated_path("digest-py-coding-patch-small.json");
+    let ts_output = Command::new("node")
+        .arg("../axiom_kernal/sdks/typescript/scripts/build-coding-patch-small.mjs")
+        .output()
+        .expect("TypeScript digest fixture generator should run");
+    let py_output = Command::new("python3")
+        .arg("../axiom_kernal/sdks/python/scripts/build_coding_patch_small.py")
+        .output()
+        .expect("Python digest fixture generator should run");
+    fs::write(&ts_path, ts_output.stdout).expect("write TypeScript digest fixture");
+    fs::write(&py_path, py_output.stdout).expect("write Python digest fixture");
+    let ts_digest = runspec_digest(&ts_path);
+    let py_digest = runspec_digest(&py_path);
+    let passed = ts_digest == rust_digest && py_digest == rust_digest;
+
+    CaseResult {
+        case_id: "sdk_spec_digest_conformance".to_string(),
+        category: "sdk".to_string(),
+        passed,
+        summary: "Rust, TypeScript, and Python produce the same canonical RunSpec digest"
+            .to_string(),
+        metrics: vec![
+            Metric {
+                name: "typescript_match".to_string(),
+                value: (ts_digest == rust_digest).to_string(),
+            },
+            Metric {
+                name: "python_match".to_string(),
+                value: (py_digest == rust_digest).to_string(),
+            },
+        ],
+        evidence: vec![
+            format!("rust={rust_digest}"),
+            format!("typescript={ts_digest}"),
+            format!("python={py_digest}"),
+        ],
+    }
+}
+
+fn runspec_digest(path: &PathBuf) -> String {
+    let output = Command::new("node")
+        .arg("runners/digest-runspec.mjs")
+        .arg(path)
+        .output()
+        .expect("RunSpec digest runner should execute");
+    String::from_utf8(output.stdout)
+        .expect("RunSpec digest should be utf8")
+        .trim()
+        .to_string()
 }
 
 fn sdk_conformance_case(
