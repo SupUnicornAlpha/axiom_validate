@@ -15,7 +15,7 @@ use axiom_core::{
     LocalTransport, MemoryRunStore, MigrationStatus, MinimalPolicyEngine, MockModelDriver,
     ModelDecision, ModelDriver, PolicyMiddleware, QueueScheduler, ReActScheduler,
     RemoteSubRunTransportMock, RemoteTransportMock, RunLeaseStore, RunStore, RunStoreRecord,
-    SnapshotArchive, StaticCapability, TitlePolicyMiddleware,
+    SnapshotArchive, StaticCapability, TitlePolicyMiddleware, WrapHarness,
 };
 use axiom_spec::{
     CapabilityLease, ChildRunSpec, EffectProposal, Event, EventKind, MergeMode, Message, RunSpec,
@@ -1866,13 +1866,17 @@ fn research_brief_agent() -> CaseResult {
 
 fn wrap_vs_native_audit() -> CaseResult {
     let spec = coding_patch_small_spec();
-    let wrapped = local_kernel()
-        .run(&spec)
-        .expect("wrapped kernel run should succeed");
     let native_outputs = vec![
         "patch:replace hi with hello".to_string(),
         "hello".to_string(),
     ];
+    let event_path = temp_event_path("wrap-vs-native-audit");
+    let wrapped = WrapHarness::new(
+        axiom_core::AllowWrap,
+        Some(Arc::new(JsonlEventLog::new(&event_path))),
+    )
+    .run(&spec, || Ok(native_outputs.clone()))
+    .expect("wrapped external executor should succeed");
     let native_audit_events = 0usize;
 
     let wrapped_event_count = wrapped.events.len();
@@ -1882,15 +1886,14 @@ fn wrap_vs_native_audit() -> CaseResult {
         .filter(|event| {
             matches!(
                 event.kind,
-                axiom_spec::EventKind::StepStarted
+                axiom_spec::EventKind::RunStarted
+                    | axiom_spec::EventKind::StepStarted
                     | axiom_spec::EventKind::StepCompleted
-                    | axiom_spec::EventKind::EffectProposed
-                    | axiom_spec::EventKind::EffectCommitted
-                    | axiom_spec::EventKind::ShellDecision
+                    | axiom_spec::EventKind::RunCompleted
             )
         })
         .count();
-    let outputs_equal = wrapped.state.outputs == native_outputs;
+    let outputs_equal = wrapped.output == native_outputs;
     let audit_gain = wrapped_audit_coverage > native_audit_events;
     let passed = outputs_equal && audit_gain;
 
@@ -1920,8 +1923,9 @@ fn wrap_vs_native_audit() -> CaseResult {
             },
         ],
         evidence: vec![
-            format!("wrapped_outputs={:?}", wrapped.state.outputs),
+            format!("wrapped_outputs={:?}", wrapped.output),
             format!("native_outputs={:?}", native_outputs),
+            format!("event_log={}", event_path.display()),
             "native_mode_assumption=no kernel event stream".to_string(),
         ],
     }
