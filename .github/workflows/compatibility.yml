@@ -1,0 +1,17 @@
+name: historical-compatibility
+on: [push, pull_request]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {path: axiom_validate}
+      - uses: actions/checkout@v4
+        with:
+          repository: SupUnicornAlpha/axiom_kernal
+          path: axiom_kernal
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: cargo run --locked
+        working-directory: axiom_validate
