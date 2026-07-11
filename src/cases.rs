@@ -10,9 +10,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axiom_core::{
     migrate_checkpoint_file, migrate_checkpoint_json, migrate_event_json, migrate_event_log,
     validate_run_spec_version, AuditShell, CapabilityRegistry, CheckpointMigrationContext,
-    CompositeShell, EventMigrationContext, FileRunLeaseStore, FileRunStore, FileSnapshotArchive,
-    JsonlEventLog, Kernel, LocalSubRunTransport, LocalTransport, MemoryRunStore, MigrationStatus,
-    MinimalPolicyEngine, PolicyMiddleware, QueueScheduler, RemoteSubRunTransportMock,
+    CliDriver, CompositeShell, EventMigrationContext, FileRunLeaseStore, FileRunStore,
+    FileSnapshotArchive, FilesystemDriver, JsonlEventLog, Kernel, LocalSubRunTransport,
+    LocalTransport, MemoryRunStore, MigrationStatus, MinimalPolicyEngine, MockModelDriver,
+    ModelDecision, PolicyMiddleware, QueueScheduler, ReActScheduler, RemoteSubRunTransportMock,
     RemoteTransportMock, RunLeaseStore, RunStore, RunStoreRecord, SnapshotArchive,
     StaticCapability, TitlePolicyMiddleware,
 };
@@ -61,6 +62,12 @@ pub fn all_cases() -> Vec<ValidationCase> {
         },
         ValidationCase {
             run: journal_maintenance_and_snapshot_retention,
+        },
+        ValidationCase {
+            run: toy_tool_agent,
+        },
+        ValidationCase {
+            run: native_driver_contracts,
         },
         ValidationCase {
             run: shell_decision_allow_rewrite_deny,
@@ -907,6 +914,167 @@ fn journal_maintenance_and_snapshot_retention() -> CaseResult {
             format!("compacted={}", compacted_path.display()),
             format!("retention={retention:?}"),
         ],
+    }
+}
+
+fn toy_tool_agent() -> CaseResult {
+    let scheduler = ReActScheduler::new(MockModelDriver::scripted([
+        ModelDecision::Invoke {
+            capability_id: "tool/echo".to_string(),
+            input: "hello from react".to_string(),
+        },
+        ModelDecision::Respond {
+            content: "The tool returned hello from react.".to_string(),
+        },
+        ModelDecision::Finish,
+    ]));
+    let kernel = Kernel::new(
+        scheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        None,
+    );
+    let mut spec = RunSpec::new(
+        "toy-tool-agent",
+        "toy ReAct tool agent",
+        vec![msg_step(
+            "user-prompt",
+            "user prompt",
+            "user",
+            "Echo hello from react and explain the result.",
+        )],
+    );
+    spec.capability_leases.push(lease("tool/echo"));
+
+    let report = kernel.run(&spec).expect("toy ReAct agent should run");
+    let tool_committed = report.events.iter().any(|event| {
+        event.kind == EventKind::EffectCommitted && event.step_id.as_deref() == Some("react-2-tool")
+    });
+    let response_committed = report.events.iter().any(|event| {
+        event.kind == EventKind::EffectCommitted
+            && event.step_id.as_deref() == Some("react-3-response")
+    });
+    let passed = tool_committed
+        && response_committed
+        && report.state.outputs == vec!["hello from react"]
+        && report.state.messages.last().is_some_and(|message| {
+            message.role == "assistant" && message.content.contains("tool returned")
+        });
+
+    CaseResult {
+        case_id: "toy_tool_agent".to_string(),
+        category: "agent".to_string(),
+        passed,
+        summary: "ReAct scheduler alternates model decisions, tool effects, and final response"
+            .to_string(),
+        metrics: vec![Metric {
+            name: "react_turns".to_string(),
+            value: (report.state.next_step_index - spec.steps.len()).to_string(),
+        }],
+        evidence: report
+            .events
+            .iter()
+            .filter(|event| event.kind == EventKind::StepProposed)
+            .map(|event| {
+                format!(
+                    "{}:{}",
+                    event.step_id.as_deref().unwrap_or("run"),
+                    event.detail
+                )
+            })
+            .collect(),
+    }
+}
+
+fn native_driver_contracts() -> CaseResult {
+    let root = temp_generated_path("native-driver-sandbox");
+    let _ = fs::remove_dir_all(&root);
+    let mut registry = CapabilityRegistry::new();
+    registry.register("driver/cli", CliDriver::new("/bin/echo", Vec::new()));
+    registry.register(
+        "driver/filesystem",
+        FilesystemDriver::new(&root).expect("filesystem driver root"),
+    );
+    let kernel = Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(registry),
+        None,
+    );
+    let mut spec = RunSpec::new(
+        "native-driver-contracts",
+        "native driver contracts",
+        vec![
+            tool_step("cli", "CLI without shell", "driver/cli", "safe;not-shell"),
+            tool_step(
+                "write",
+                "sandboxed write",
+                "driver/filesystem",
+                r#"{"operation":"write","path":"nested/result.txt","content":"sandboxed"}"#,
+            ),
+            tool_step(
+                "read",
+                "sandboxed read",
+                "driver/filesystem",
+                r#"{"operation":"read","path":"nested/result.txt"}"#,
+            ),
+        ],
+    );
+    spec.capability_leases.push(lease("driver/cli"));
+    spec.capability_leases.push(lease("driver/filesystem"));
+    let report = kernel.run(&spec).expect("native drivers should run");
+
+    let mut denied_registry = CapabilityRegistry::new();
+    denied_registry.register(
+        "driver/filesystem",
+        FilesystemDriver::new(&root).expect("filesystem driver root"),
+    );
+    let denied_kernel = Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(denied_registry),
+        None,
+    );
+    let mut denied_spec = RunSpec::new(
+        "native-driver-traversal",
+        "native driver traversal",
+        vec![tool_step(
+            "escape",
+            "deny traversal",
+            "driver/filesystem",
+            r#"{"operation":"read","path":"../secret"}"#,
+        )],
+    );
+    denied_spec
+        .capability_leases
+        .push(lease("driver/filesystem"));
+    let traversal_denied = matches!(
+        denied_kernel.run(&denied_spec),
+        Err(axiom_core::KernelError::Capability(detail)) if detail.contains("filesystem_path_denied")
+    );
+    let passed = report
+        .state
+        .outputs
+        .first()
+        .is_some_and(|value| value == "safe;not-shell")
+        && report
+            .state
+            .outputs
+            .last()
+            .is_some_and(|value| value == "sandboxed")
+        && traversal_denied;
+
+    CaseResult {
+        case_id: "native_driver_contracts".to_string(),
+        category: "driver".to_string(),
+        passed,
+        summary: "CLI avoids shell interpolation and filesystem access stays inside its root"
+            .to_string(),
+        metrics: vec![Metric {
+            name: "traversal_denied".to_string(),
+            value: traversal_denied.to_string(),
+        }],
+        evidence: report.state.outputs,
     }
 }
 
