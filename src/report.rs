@@ -63,6 +63,7 @@ pub fn render_markdown_report(results: &[CaseResult]) -> String {
     out.push_str("- `journal_maintenance_and_snapshot_retention`: 验证完整性扫描、旁路修复、checkpoint-aware compaction 与 snapshot retention。\n");
     out.push_str("- `toy_tool_agent`: 验证 ReAct 的 model decision、tool invocation、observation 与 response 闭环。\n");
     out.push_str("- `native_driver_contracts`: 验证 CLI 无 shell interpolation 且 filesystem driver 阻止目录逃逸。\n");
+    out.push_str("- `durable_scheduler_proposal_recovery`: 验证动态提案写 journal 后即使 checkpoint 失败，恢复也复用原提案。\n");
     out.push_str("- `audit_coverage`: 对齐工具调用审计覆盖率与治理可见性验证。\n");
     out.push_str("- `permission_denial_rate`: 对齐 sandbox / lease 越权拦截验证。\n");
     out.push_str("- `merge_semantics`: 对齐 multi-agent / subagent 合并语义验证。\n");

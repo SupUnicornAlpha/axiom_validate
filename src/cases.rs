@@ -3,7 +3,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,9 +13,9 @@ use axiom_core::{
     CliDriver, CompositeShell, EventMigrationContext, FileRunLeaseStore, FileRunStore,
     FileSnapshotArchive, FilesystemDriver, JsonlEventLog, Kernel, LocalSubRunTransport,
     LocalTransport, MemoryRunStore, MigrationStatus, MinimalPolicyEngine, MockModelDriver,
-    ModelDecision, PolicyMiddleware, QueueScheduler, ReActScheduler, RemoteSubRunTransportMock,
-    RemoteTransportMock, RunLeaseStore, RunStore, RunStoreRecord, SnapshotArchive,
-    StaticCapability, TitlePolicyMiddleware,
+    ModelDecision, ModelDriver, PolicyMiddleware, QueueScheduler, ReActScheduler,
+    RemoteSubRunTransportMock, RemoteTransportMock, RunLeaseStore, RunStore, RunStoreRecord,
+    SnapshotArchive, StaticCapability, TitlePolicyMiddleware,
 };
 use axiom_spec::{
     CapabilityLease, ChildRunSpec, EffectProposal, Event, EventKind, MergeMode, Message, RunSpec,
@@ -68,6 +68,9 @@ pub fn all_cases() -> Vec<ValidationCase> {
         },
         ValidationCase {
             run: native_driver_contracts,
+        },
+        ValidationCase {
+            run: durable_scheduler_proposal_recovery,
         },
         ValidationCase {
             run: shell_decision_allow_rewrite_deny,
@@ -1075,6 +1078,117 @@ fn native_driver_contracts() -> CaseResult {
             value: traversal_denied.to_string(),
         }],
         evidence: report.state.outputs,
+    }
+}
+
+#[derive(Clone)]
+struct RecoveryModel {
+    calls: Arc<AtomicUsize>,
+}
+
+impl ModelDriver for RecoveryModel {
+    fn decide(&self, _spec: &RunSpec, _state: &RunState) -> Result<ModelDecision, String> {
+        match self.calls.fetch_add(1, Ordering::SeqCst) {
+            0 => Ok(ModelDecision::Invoke {
+                capability_id: "tool/echo".to_string(),
+                input: "durable proposal".to_string(),
+            }),
+            1 => Ok(ModelDecision::Finish),
+            _ => Err("model_called_more_than_expected".to_string()),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct FailPendingCheckpointOnce {
+    inner: MemoryRunStore,
+    failed: Arc<AtomicBool>,
+}
+
+impl RunStore for FailPendingCheckpointOnce {
+    fn put(&self, record: RunStoreRecord) -> Result<(), String> {
+        if record.state.pending_step.is_some() && !self.failed.swap(true, Ordering::SeqCst) {
+            return Err("injected_pending_checkpoint_failure".to_string());
+        }
+        self.inner.put(record)
+    }
+
+    fn get(&self, run_id: &str) -> Result<Option<RunStoreRecord>, String> {
+        self.inner.get(run_id)
+    }
+
+    fn list_run_ids(&self) -> Result<Vec<String>, String> {
+        self.inner.list_run_ids()
+    }
+}
+
+fn durable_scheduler_proposal_recovery() -> CaseResult {
+    let event_path = temp_event_path("durable-scheduler-proposal");
+    let journal = Arc::new(JsonlEventLog::new(&event_path));
+    let store = Arc::new(FailPendingCheckpointOnce {
+        inner: MemoryRunStore::new(),
+        failed: Arc::new(AtomicBool::new(false)),
+    });
+    let calls = Arc::new(AtomicUsize::new(0));
+    let spec = {
+        let mut spec = RunSpec::new(
+            "durable-scheduler-proposal",
+            "durable scheduler proposal",
+            Vec::new(),
+        );
+        spec.capability_leases.push(lease("tool/echo"));
+        spec
+    };
+
+    let first = Kernel::with_services(
+        ReActScheduler::new(RecoveryModel {
+            calls: Arc::clone(&calls),
+        }),
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        LocalSubRunTransport,
+        Some(journal.clone()),
+        store.clone(),
+    );
+    let failed_at_checkpoint = matches!(
+        first.run(&spec),
+        Err(axiom_core::KernelError::RunStore(detail))
+            if detail == "injected_pending_checkpoint_failure"
+    );
+
+    let resumed = Kernel::with_services(
+        ReActScheduler::new(RecoveryModel {
+            calls: Arc::clone(&calls),
+        }),
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        LocalSubRunTransport,
+        Some(journal),
+        store,
+    )
+    .resume(&spec)
+    .expect("pending scheduler proposal should recover");
+    let model_calls = calls.load(Ordering::SeqCst);
+    let passed = failed_at_checkpoint
+        && resumed.state.outputs == vec!["durable proposal"]
+        && resumed.state.pending_step.is_none()
+        && model_calls == 2;
+
+    CaseResult {
+        case_id: "durable_scheduler_proposal_recovery".to_string(),
+        category: "recovery".to_string(),
+        passed,
+        summary: "Journaled scheduler proposals survive checkpoint failure without skipping tool execution"
+            .to_string(),
+        metrics: vec![Metric {
+            name: "model_calls".to_string(),
+            value: model_calls.to_string(),
+        }],
+        evidence: vec![
+            format!("failed_at_checkpoint={failed_at_checkpoint}"),
+            format!("outputs={:?}", resumed.state.outputs),
+            format!("journal={}", event_path.display()),
+        ],
     }
 }
 

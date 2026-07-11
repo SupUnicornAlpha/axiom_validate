@@ -16,8 +16,20 @@ function normalized(path) {
       if (event.commit_id) {
         event.commit_id = event.commit_id.replace(digest, "<spec-digest>")
       }
-      return event
+      return canonicalize(event)
     })
+}
+
+function canonicalize(value) {
+  if (Array.isArray(value)) return value.map(canonicalize)
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalize(value[key])]),
+    )
+  }
+  return value
 }
 
 const equal = JSON.stringify(normalized(actualPath)) === JSON.stringify(normalized(goldenPath))
