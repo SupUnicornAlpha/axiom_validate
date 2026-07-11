@@ -1,5 +1,6 @@
-use std::collections::BTreeSet;
-use std::fs;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,10 +10,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axiom_core::{
     migrate_checkpoint_file, migrate_checkpoint_json, migrate_event_json, migrate_event_log,
     validate_run_spec_version, AuditShell, CapabilityRegistry, CheckpointMigrationContext,
-    CompositeShell, EventMigrationContext, FileRunLeaseStore, FileRunStore, JsonlEventLog, Kernel,
-    LocalSubRunTransport, LocalTransport, MemoryRunStore, MigrationStatus, MinimalPolicyEngine,
-    PolicyMiddleware, QueueScheduler, RemoteSubRunTransportMock, RemoteTransportMock,
-    RunLeaseStore, RunStore, RunStoreRecord, StaticCapability, TitlePolicyMiddleware,
+    CompositeShell, EventMigrationContext, FileRunLeaseStore, FileRunStore, FileSnapshotArchive,
+    JsonlEventLog, Kernel, LocalSubRunTransport, LocalTransport, MemoryRunStore, MigrationStatus,
+    MinimalPolicyEngine, PolicyMiddleware, QueueScheduler, RemoteSubRunTransportMock,
+    RemoteTransportMock, RunLeaseStore, RunStore, RunStoreRecord, SnapshotArchive,
+    StaticCapability, TitlePolicyMiddleware,
 };
 use axiom_spec::{
     CapabilityLease, ChildRunSpec, EffectProposal, Event, EventKind, MergeMode, Message, RunSpec,
@@ -56,6 +58,9 @@ pub fn all_cases() -> Vec<ValidationCase> {
         },
         ValidationCase {
             run: schema_migration_compatibility_matrix,
+        },
+        ValidationCase {
+            run: journal_maintenance_and_snapshot_retention,
         },
         ValidationCase {
             run: shell_decision_allow_rewrite_deny,
@@ -777,6 +782,131 @@ fn schema_migration_compatibility_matrix() -> CaseResult {
             .into_iter()
             .chain(legacy_checkpoint.warnings)
             .collect(),
+    }
+}
+
+fn journal_maintenance_and_snapshot_retention() -> CaseResult {
+    let source_path = temp_event_path("journal-maintenance-source");
+    let repaired_path = temp_generated_path("journal-maintenance-repaired.jsonl");
+    let quarantine_path = temp_generated_path("journal-maintenance-quarantine.txt");
+    let compacted_path = temp_generated_path("journal-maintenance-compacted.jsonl");
+    let spec = RunSpec::new(
+        "journal-maintenance",
+        "journal maintenance",
+        vec![
+            msg_step("s1", "first committed message", "assistant", "first"),
+            msg_step("s2", "second committed message", "assistant", "second"),
+        ],
+    );
+    let kernel = Kernel::new(
+        QueueScheduler,
+        AuditShell,
+        LocalTransport::new(base_registry()),
+        Some(JsonlEventLog::new(&source_path)),
+    );
+    let report = kernel.run(&spec).expect("maintenance source run");
+    let clean_before_corruption = JsonlEventLog::new(&source_path)
+        .scan_integrity()
+        .expect("source integrity scan")
+        .is_clean();
+    let mut source = OpenOptions::new()
+        .append(true)
+        .open(&source_path)
+        .expect("open source journal for corruption fixture");
+    source
+        .write_all(b"{corrupt-journal-line\n")
+        .expect("append corrupt fixture line");
+    source.flush().expect("flush corrupt fixture line");
+
+    let corrupted_log = JsonlEventLog::new(&source_path);
+    let corrupted_scan = corrupted_log
+        .scan_integrity()
+        .expect("corrupted journal scan");
+    let compaction_blocked = corrupted_log
+        .compact_to(&compacted_path, BTreeMap::new())
+        .is_err();
+    let repair = corrupted_log
+        .repair_to(&repaired_path, &quarantine_path)
+        .expect("repair should quarantine malformed line");
+    let repaired_log = JsonlEventLog::new(&repaired_path);
+    let repaired_clean = repaired_log
+        .scan_integrity()
+        .expect("repaired journal scan")
+        .is_clean();
+    let boundaries = BTreeMap::from([(spec.run_id.clone(), 8_u64)]);
+    let compaction = repaired_log
+        .compact_to(&compacted_path, boundaries)
+        .expect("clean journal compaction");
+    let compacted_tail = JsonlEventLog::new(&compacted_path)
+        .load_after(&spec.run_id, 8)
+        .expect("compacted journal tail readable");
+    let compaction_valid = compaction.source_events == report.events.len()
+        && compaction.dropped_events == 8
+        && compacted_tail.first().map(|event| event.sequence) == Some(9)
+        && compacted_tail.len() == compaction.retained_events;
+
+    let snapshot_root = PathBuf::from("reports/checkpoints/snapshot-retention");
+    let _ = fs::remove_dir_all(&snapshot_root);
+    let archive = FileSnapshotArchive::new(&snapshot_root);
+    for sequence in [8_u64, 15, 20] {
+        archive
+            .archive(&RunStoreRecord {
+                checkpoint_version: 1,
+                run_id: spec.run_id.clone(),
+                spec_digest: spec.digest(),
+                last_sequence: sequence,
+                writer_epoch: 1,
+                applied_commit_ids: BTreeSet::new(),
+                state: report.state.clone(),
+            })
+            .expect("archive checkpoint snapshot");
+    }
+    let retention = archive
+        .retain_latest(&spec.run_id, 2)
+        .expect("snapshot retention");
+    let retention_valid = retention.deleted_sequences == vec![8]
+        && retention.retained_sequences == vec![15, 20]
+        && archive
+            .load(&spec.run_id, 8)
+            .expect("deleted snapshot lookup")
+            .is_none()
+        && archive
+            .load(&spec.run_id, 20)
+            .expect("retained snapshot lookup")
+            .is_some();
+
+    let passed = clean_before_corruption
+        && corrupted_scan.corrupt_lines.len() == 1
+        && compaction_blocked
+        && repair.quarantined_lines.len() == 1
+        && repaired_clean
+        && compaction_valid
+        && retention_valid;
+    CaseResult {
+        case_id: "journal_maintenance_and_snapshot_retention".to_string(),
+        category: "maintenance".to_string(),
+        passed,
+        summary: "Journal repair preserves evidence, compaction follows snapshots, and retention prunes safely"
+            .to_string(),
+        metrics: vec![
+            Metric {
+                name: "corrupt_lines_quarantined".to_string(),
+                value: repair.quarantined_lines.len().to_string(),
+            },
+            Metric {
+                name: "events_compacted".to_string(),
+                value: compaction.dropped_events.to_string(),
+            },
+            Metric {
+                name: "snapshots_retained".to_string(),
+                value: retention.retained_sequences.len().to_string(),
+            },
+        ],
+        evidence: vec![
+            format!("quarantine={}", quarantine_path.display()),
+            format!("compacted={}", compacted_path.display()),
+            format!("retention={retention:?}"),
+        ],
     }
 }
 
