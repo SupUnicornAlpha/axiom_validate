@@ -75,6 +75,7 @@ pub fn render_markdown_report(results: &[CaseResult]) -> String {
     out.push_str("- `sdk_spec_digest_conformance`: 验证 Rust/TypeScript/Python 对 canonical RunSpec 生成相同 SHA-256。\n");
     out.push_str("- `brief_completeness`: 对齐 research agent 输出完整性验证。\n");
     out.push_str("- `wrap_audit_gain`: 对齐 wrap 模式相对 native 执行的审计覆盖收益验证。\n");
+    out.push_str("- `coding_agent_opencode_parity`: 验证 workspace-scoped read/search/edit/bash 与 ReAct 修复闭环，不宣称模型质量等价。\n");
     out.push_str("- `golden_eventlog_match`: 对齐 golden EventLog 与 validator 的一致性验证。\n");
     out.push_str(
         "- `task_success`: 作为后续接入开源基准（如 SWE-bench 风格、GAIA 风格）的占位接口。\n",

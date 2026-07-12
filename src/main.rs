@@ -1,4 +1,5 @@
 mod cases;
+mod coding_agent;
 mod report;
 
 use std::fs;

@@ -22,6 +22,7 @@ use axiom_spec::{
     RunState, Step, StepAction,
 };
 
+use crate::coding_agent::run_scripted;
 use crate::report::{CaseResult, Metric};
 
 pub struct ValidationCase {
@@ -95,6 +96,9 @@ pub fn all_cases() -> Vec<ValidationCase> {
         },
         ValidationCase {
             run: coding_patch_small,
+        },
+        ValidationCase {
+            run: coding_agent_opencode_parity,
         },
         ValidationCase {
             run: local_remote_invariance,
@@ -1602,6 +1606,89 @@ fn coding_patch_small() -> CaseResult {
                     .map(|message| message.content),
             )
             .collect(),
+    }
+}
+
+fn coding_agent_opencode_parity() -> CaseResult {
+    let workspace = temp_generated_path("coding-agent-opencode-parity");
+    let _ = fs::remove_dir_all(&workspace);
+    fs::create_dir_all(workspace.join("src")).expect("create coding fixture");
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[package]\nname='calculator-fixture'\nversion='0.1.0'\nedition='2021'\n",
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        workspace.join("src/lib.rs"),
+        "pub fn add(left: i32, right: i32) -> i32 { left - right }\n\n#[cfg(test)]\nmod tests { use super::*; #[test] fn adds() { assert_eq!(add(2, 3), 5); } }\n",
+    )
+    .expect("write buggy fixture");
+
+    let result = run_scripted(
+        &workspace,
+        "Fix the failing calculator test and verify it.",
+        [
+            ModelDecision::Invoke {
+                capability_id: "coding/list".into(),
+                input: ".".into(),
+            },
+            ModelDecision::Invoke {
+                capability_id: "coding/read".into(),
+                input: "src/lib.rs".into(),
+            },
+            ModelDecision::Invoke {
+                capability_id: "coding/grep".into(),
+                input: r#"{"path":"src/lib.rs","pattern":"left - right"}"#.into(),
+            },
+            ModelDecision::Invoke {
+                capability_id: "coding/edit".into(),
+                input: r#"{"path":"src/lib.rs","old":"left - right","new":"left + right"}"#.into(),
+            },
+            ModelDecision::Invoke {
+                capability_id: "coding/bash".into(),
+                input: "cargo test --offline".into(),
+            },
+            ModelDecision::Respond {
+                content: "Fixed add and verified the test suite passes.".into(),
+            },
+            ModelDecision::Finish,
+        ],
+    )
+    .expect("coding agent should complete");
+    let source = fs::read_to_string(result.workspace.join("src/lib.rs")).expect("read result");
+    let tool_steps = result
+        .report
+        .events
+        .iter()
+        .filter(|event| event.kind == EventKind::StepStarted)
+        .count();
+    let committed = result
+        .report
+        .events
+        .iter()
+        .filter(|event| event.kind == EventKind::EffectCommitted)
+        .count();
+    let passed = source.contains("left + right")
+        && result
+            .report
+            .state
+            .messages
+            .last()
+            .is_some_and(|message| message.content.contains("verified"))
+        && tool_steps == 6
+        && committed == 6;
+
+    CaseResult {
+        case_id: "coding_agent_opencode_parity".to_string(),
+        category: "coding-agent".to_string(),
+        passed,
+        summary: "Axiom coding agent reads, searches, edits, tests, and summarizes in an audited ReAct loop".to_string(),
+        metrics: vec![
+            Metric { name: "task_success".to_string(), value: source.contains("left + right").to_string() },
+            Metric { name: "tool_steps".to_string(), value: tool_steps.to_string() },
+            Metric { name: "committed_effects".to_string(), value: committed.to_string() },
+        ],
+        evidence: vec![format!("workspace={}", result.workspace.display()), format!("source={source}")],
     }
 }
 
