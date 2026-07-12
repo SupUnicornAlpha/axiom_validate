@@ -22,7 +22,7 @@ use axiom_spec::{
     RunState, Step, StepAction,
 };
 
-use crate::coding_agent::run_scripted;
+use crate::coding_agent::run_go_agent;
 use crate::report::{CaseResult, Metric};
 
 pub struct ValidationCase {
@@ -1624,37 +1624,8 @@ fn coding_agent_opencode_parity() -> CaseResult {
     )
     .expect("write buggy fixture");
 
-    let result = run_scripted(
-        &workspace,
-        "Fix the failing calculator test and verify it.",
-        [
-            ModelDecision::Invoke {
-                capability_id: "coding/list".into(),
-                input: ".".into(),
-            },
-            ModelDecision::Invoke {
-                capability_id: "coding/read".into(),
-                input: "src/lib.rs".into(),
-            },
-            ModelDecision::Invoke {
-                capability_id: "coding/grep".into(),
-                input: r#"{"path":"src/lib.rs","pattern":"left - right"}"#.into(),
-            },
-            ModelDecision::Invoke {
-                capability_id: "coding/edit".into(),
-                input: r#"{"path":"src/lib.rs","old":"left - right","new":"left + right"}"#.into(),
-            },
-            ModelDecision::Invoke {
-                capability_id: "coding/bash".into(),
-                input: "cargo test --offline".into(),
-            },
-            ModelDecision::Respond {
-                content: "Fixed add and verified the test suite passes.".into(),
-            },
-            ModelDecision::Finish,
-        ],
-    )
-    .expect("coding agent should complete");
+    let result = run_go_agent(&workspace, "Fix the failing calculator test and verify it.")
+        .expect("coding agent should complete");
     let source = fs::read_to_string(result.workspace.join("src/lib.rs")).expect("read result");
     let tool_steps = result
         .report
@@ -1682,7 +1653,7 @@ fn coding_agent_opencode_parity() -> CaseResult {
         case_id: "coding_agent_opencode_parity".to_string(),
         category: "coding-agent".to_string(),
         passed,
-        summary: "Axiom coding agent reads, searches, edits, tests, and summarizes in an audited ReAct loop".to_string(),
+        summary: "Go coding agent reads, searches, edits, tests, and summarizes through the Axiom runtime".to_string(),
         metrics: vec![
             Metric { name: "task_success".to_string(), value: source.contains("left + right").to_string() },
             Metric { name: "tool_steps".to_string(), value: tool_steps.to_string() },
