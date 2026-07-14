@@ -55,7 +55,12 @@ fn run_with_model<M: ModelDriver>(
     model: M,
 ) -> Result<CodingAgentResult, String> {
     let registry = go_tool_registry(binary, workspace);
-    let kernel = Kernel::new(ReActScheduler::new(model), AuditShell, LocalTransport::new(registry), None);
+    let kernel = Kernel::new(
+        ReActScheduler::new(model),
+        AuditShell,
+        LocalTransport::new(registry),
+        None,
+    );
     let mut spec = RunSpec::new(run_id, task, Vec::new());
     spec.namespace.workspace_root = workspace.to_string_lossy().to_string();
     spec.budget.max_steps = 48;
@@ -186,13 +191,12 @@ impl ModelDriver for GoDecideModelDriver {
                 String::from_utf8_lossy(&output.stderr).trim()
             ));
         }
-        let value: serde_json::Value =
-            serde_json::from_slice(&output.stdout).map_err(|error| {
-                format!(
-                    "invalid decide json: {error}; stdout={}",
-                    String::from_utf8_lossy(&output.stdout)
-                )
-            })?;
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+            format!(
+                "invalid decide json: {error}; stdout={}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        })?;
         parse_decision_value(value)
     }
 }

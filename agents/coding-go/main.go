@@ -1,42 +1,22 @@
 package main
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
 	"os"
+
+	axiom "github.com/SupUnicornAlpha/axiom_kernal/sdks/go"
+	"github.com/SupUnicornAlpha/axiom_kernal/sdks/go/workspace"
 )
 
-func main() {
-	if len(os.Args) < 2 {
-		fail(errors.New("usage: prompt | plan [task] | decide [observation.json|-] | tool <name> <root> <permission> <input>"))
-	}
-	switch os.Args[1] {
-	case "prompt":
-		fmt.Print(SystemPrompt)
-	case "plan":
-		// Offline deterministic script for axiom_validate regression.
-		if err := json.NewEncoder(os.Stdout).Encode(deterministicPlan()); err != nil {
-			fail(err)
-		}
-	case "decide":
-		raw := readObservationInput(os.Args[2:])
-		emitDecisionFromObservation(raw)
-	case "tool":
-		if len(os.Args) != 6 {
-			fail(errors.New("tool requires: tool <name> <root> <permission> <input>"))
-		}
-		output, err := runTool(os.Args[2], os.Args[3], os.Args[4], os.Args[5])
-		if err != nil {
-			fail(err)
-		}
-		fmt.Print(output)
-	default:
-		fail(fmt.Errorf("unknown command %q", os.Args[1]))
-	}
-}
+type codingPlanner struct{}
 
-func fail(err error) {
-	fmt.Fprintln(os.Stderr, err)
-	os.Exit(1)
+func (codingPlanner) Plan(string) ([]axiom.Decision, error)                { return deterministicPlan(), nil }
+func (codingPlanner) Decide(obs axiom.Observation) (axiom.Decision, error) { return decideWithLLM(obs) }
+
+func main() {
+	tools := workspace.NewCodingRegistry([][]string{
+		{"cargo", "test"}, {"cargo", "check"}, {"cargo", "build"},
+		{"go", "test"}, {"go", "build"}, {"python", "-m", "pytest"}, {"python3", "-m", "pytest"},
+	})
+	sidecar := axiom.Sidecar{SystemPrompt: SystemPrompt, Planner: codingPlanner{}, Tools: tools}
+	os.Exit(sidecar.Run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }

@@ -3,33 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"strings"
+
+	axiom "github.com/SupUnicornAlpha/axiom_kernal/sdks/go"
 )
 
-type Decision struct {
-	Kind         string `json:"kind"`
-	CapabilityID string `json:"capability_id,omitempty"`
-	Input        string `json:"input,omitempty"`
-	Content      string `json:"content,omitempty"`
-}
-
-type ObservationMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// Observation is the per-turn context passed from the Axiom ReAct bridge.
-type Observation struct {
-	Task                string               `json:"task"`
-	Messages            []ObservationMessage `json:"messages"`
-	Outputs             []string             `json:"outputs"`
-	DeniedActions       []string             `json:"denied_actions"`
-	NextStepIndex       int                  `json:"next_step_index"`
-	VisibleCapabilities []string             `json:"visible_capabilities"`
-	WorkspaceRoot       string               `json:"workspace_root,omitempty"`
-}
+type Decision = axiom.Decision
+type Observation = axiom.Observation
 
 const decisionSchema = `Return ONLY one JSON object with one of these shapes:
 {"kind":"invoke","capability_id":"coding/list|coding/read|coding/grep|coding/edit|coding/write|coding/bash","input":"..."}
@@ -49,23 +29,6 @@ Rules:
 - After a successful verification, emit respond then finish on a later turn — or respond now if certainty is high, then finish next.
 - Never invent capability ids outside the list above.
 - If a tool fails, revise the approach; do not repeat the identical failing call blindly.`
-
-func emitDecisionFromObservation(raw []byte) {
-	var obs Observation
-	if err := json.Unmarshal(raw, &obs); err != nil {
-		fail(fmt.Errorf("invalid observation json: %w", err))
-	}
-	if strings.TrimSpace(obs.Task) == "" {
-		fail(fmt.Errorf("observation.task is required"))
-	}
-	decision, err := decideWithLLM(obs)
-	if err != nil {
-		fail(err)
-	}
-	if err := json.NewEncoder(os.Stdout).Encode(decision); err != nil {
-		fail(err)
-	}
-}
 
 func decideWithLLM(obs Observation) (Decision, error) {
 	cfg, err := loadLLMConfig()
@@ -156,41 +119,10 @@ func parseDecision(content string) (Decision, error) {
 	if err := json.Unmarshal([]byte(content), &d); err != nil {
 		return Decision{}, fmt.Errorf("json unmarshal: %w", err)
 	}
-	switch d.Kind {
-	case "invoke":
-		if d.CapabilityID == "" {
-			return Decision{}, fmt.Errorf("invoke requires capability_id")
-		}
-		if !strings.HasPrefix(d.CapabilityID, "coding/") {
-			return Decision{}, fmt.Errorf("unsupported capability_id %q", d.CapabilityID)
-		}
-		return d, nil
-	case "respond":
-		if strings.TrimSpace(d.Content) == "" {
-			return Decision{}, fmt.Errorf("respond requires content")
-		}
-		return d, nil
-	case "finish":
-		return d, nil
-	default:
-		return Decision{}, fmt.Errorf("unknown kind %q", d.Kind)
+	if err := axiom.ValidateDecision(d, "coding/"); err != nil {
+		return Decision{}, err
 	}
-}
-
-func readObservationInput(args []string) []byte {
-	// decide [observation.json]  — file path or stdin JSON
-	if len(args) >= 1 && args[0] != "-" {
-		raw, err := os.ReadFile(args[0])
-		if err != nil {
-			fail(err)
-		}
-		return raw
-	}
-	raw, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		fail(err)
-	}
-	return raw
+	return d, nil
 }
 
 // deterministicPlan keeps CI validation offline and reproducible.

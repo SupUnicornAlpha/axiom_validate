@@ -72,7 +72,10 @@ pub fn render_markdown_report(results: &[CaseResult]) -> String {
         "- `subrun_transport_invariance`: 对齐 ChildRun 本地/远程部署边界的语义一致性验证。\n",
     );
     out.push_str("- `sdk_conformance_runspec`: 对齐多语言 SDK 生成同一 RunSpec 的一致性验证。\n");
-    out.push_str("- `sdk_spec_digest_conformance`: 验证 Rust/TypeScript/Python 对 canonical RunSpec 生成相同 SHA-256。\n");
+    out.push_str(
+        "- `go_sdk_conformance_runspec`: 验证 Go SDK builder 与 canonical fixture 一致。\n",
+    );
+    out.push_str("- `sdk_spec_digest_conformance`: 验证 Rust/TypeScript/Python/Go 对 canonical RunSpec 生成相同 SHA-256。\n");
     out.push_str("- `brief_completeness`: 对齐 research agent 输出完整性验证。\n");
     out.push_str("- `wrap_audit_gain`: 对齐 wrap 模式相对 native 执行的审计覆盖收益验证。\n");
     out.push_str("- `coding_agent_opencode_parity`: 验证 Go 实现的 workspace-scoped read/search/edit/bash 通过 Axiom runtime 完成修复闭环，不宣称模型质量等价。\n");

@@ -110,6 +110,9 @@ pub fn all_cases() -> Vec<ValidationCase> {
             run: py_sdk_conformance_runspec,
         },
         ValidationCase {
+            run: go_sdk_conformance_runspec,
+        },
+        ValidationCase {
             run: sdk_spec_digest_conformance,
         },
         ValidationCase {
@@ -1755,10 +1758,28 @@ fn py_sdk_conformance_runspec() -> CaseResult {
     )
 }
 
+fn go_sdk_conformance_runspec() -> CaseResult {
+    sdk_conformance_case(
+        "go_sdk_conformance_runspec",
+        "Go SDK generates the same RunSpec as the golden fixture",
+        "go",
+        vec![
+            "-C".to_string(),
+            "../axiom_kernal/sdks/go".to_string(),
+            "run".to_string(),
+            "./cmd/build-coding-patch-small".to_string(),
+        ],
+        PathBuf::from("runners/compare-json.mjs"),
+        PathBuf::from("fixtures/runspec/coding_patch_small.json"),
+        "coding_patch_small.go.generated.json",
+    )
+}
+
 fn sdk_spec_digest_conformance() -> CaseResult {
     let rust_digest = coding_patch_small_spec().digest();
     let ts_path = temp_generated_path("digest-ts-coding-patch-small.json");
     let py_path = temp_generated_path("digest-py-coding-patch-small.json");
+    let go_path = temp_generated_path("digest-go-coding-patch-small.json");
     let ts_output = Command::new("node")
         .arg("../axiom_kernal/sdks/typescript/scripts/build-coding-patch-small.mjs")
         .output()
@@ -1767,17 +1788,28 @@ fn sdk_spec_digest_conformance() -> CaseResult {
         .arg("../axiom_kernal/sdks/python/scripts/build_coding_patch_small.py")
         .output()
         .expect("Python digest fixture generator should run");
+    let go_output = Command::new("go")
+        .args([
+            "-C",
+            "../axiom_kernal/sdks/go",
+            "run",
+            "./cmd/build-coding-patch-small",
+        ])
+        .output()
+        .expect("Go digest fixture generator should run");
     fs::write(&ts_path, ts_output.stdout).expect("write TypeScript digest fixture");
     fs::write(&py_path, py_output.stdout).expect("write Python digest fixture");
+    fs::write(&go_path, go_output.stdout).expect("write Go digest fixture");
     let ts_digest = runspec_digest(&ts_path);
     let py_digest = runspec_digest(&py_path);
-    let passed = ts_digest == rust_digest && py_digest == rust_digest;
+    let go_digest = runspec_digest(&go_path);
+    let passed = ts_digest == rust_digest && py_digest == rust_digest && go_digest == rust_digest;
 
     CaseResult {
         case_id: "sdk_spec_digest_conformance".to_string(),
         category: "sdk".to_string(),
         passed,
-        summary: "Rust, TypeScript, and Python produce the same canonical RunSpec digest"
+        summary: "Rust, TypeScript, Python, and Go produce the same canonical RunSpec digest"
             .to_string(),
         metrics: vec![
             Metric {
@@ -1788,11 +1820,16 @@ fn sdk_spec_digest_conformance() -> CaseResult {
                 name: "python_match".to_string(),
                 value: (py_digest == rust_digest).to_string(),
             },
+            Metric {
+                name: "go_match".to_string(),
+                value: (go_digest == rust_digest).to_string(),
+            },
         ],
         evidence: vec![
             format!("rust={rust_digest}"),
             format!("typescript={ts_digest}"),
             format!("python={py_digest}"),
+            format!("go={go_digest}"),
         ],
     }
 }
